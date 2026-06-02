@@ -19,6 +19,7 @@
     "supabase:sync-openai-key": "node scripts/set-supabase-openai-secret.mjs",
     "supabase:deploy-transcrever": "npx supabase functions deploy transcrever --project-ref utlcsmhtzqhbndqxninf",
     "test:parser": "node --test server/services/subtitleParser.test.mjs",
+    "test:bot": "node --test server/services/youtubeBotError.test.mjs",
     "firewall:open": "powershell -ExecutionPolicy Bypass -File scripts/open-firewall-port.ps1"
   },
   "workspaces": [

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isYouTubeBotError, YOUTUBE_BOT_USER_MESSAGE } from '../services/youtubeBotError.js';
 
 export class CommandExecutionError extends Error {
   constructor(message, details = {}) {
@@ -152,6 +153,10 @@ export function runCommand(command, args, options = {}) {
 }
 
 function buildFriendlyCommandError(command, strategy, stderr, stdout, spawnMessage) {
+  if (isYouTubeBotError({ message: stderr || stdout, stderr, stdout })) {
+    return YOUTUBE_BOT_USER_MESSAGE;
+  }
+
   const summary = summarizeProcessOutput(stderr || stdout);
 
   if (spawnMessage) {

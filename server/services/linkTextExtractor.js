@@ -3,8 +3,13 @@ import path from 'node:path';
 import { config } from '../utils/config.js';
 import { getTools } from '../utils/binaries.js';
 import { runCommand } from '../utils/process.js';
-import { classifyLinkPlatform, normalizeYouTubeUrl } from './linkClassifier.js';
+import { classifyLinkPlatform, getYouTubeUrlVariants } from './linkClassifier.js';
 import { subtitleFileToPlainText } from './subtitleParser.js';
+import {
+  buildYouTubeBotCheckResult,
+  isYouTubeBotError,
+  YOUTUBE_BOT_CHECK_CODE,
+} from './youtubeBotError.js';
 
 export const NO_ACCESSIBLE_TEXT_MESSAGE =
   'Não foi encontrada legenda/transcrição acessível para este link. No modo gratuito por link, o app só consegue extrair textos já disponíveis na plataforma.';
@@ -35,18 +40,66 @@ export async function extractLinkText(inputUrl, jobDir) {
   }
 
   if (link.platform === 'youtube') {
-    return extractYouTubeText(link.url, jobDir);
+    return extractYouTubeText(inputUrl, jobDir);
   }
 
   return extractMetadataPlatformText(link.platform, link.url, jobDir);
 }
 
-async function extractYouTubeText(url, jobDir) {
-  const normalizedUrl = normalizeYouTubeUrl(url);
-  const metadata = await fetchVideoMetadata(normalizedUrl);
+async function extractYouTubeText(inputUrl, jobDir) {
+  const variants = getYouTubeUrlVariants(inputUrl);
+  let lastBotResult = null;
+  let lastNoTextResult = null;
+
+  for (const variantUrl of variants) {
+    console.log('[extract] tentando URL YouTube:', variantUrl);
+
+    try {
+      const result = await extractYouTubeTextForUrl(variantUrl, jobDir);
+
+      if (result.success) {
+        return result;
+      }
+
+      if (result.code === YOUTUBE_BOT_CHECK_CODE) {
+        lastBotResult = result;
+        continue;
+      }
+
+      lastNoTextResult = result;
+    } catch (error) {
+      if (isYouTubeBotError(error)) {
+        console.warn('[extract] YouTube bot check:', variantUrl);
+        lastBotResult = buildResult(buildYouTubeBotCheckResult('youtube'));
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  if (lastBotResult) {
+    console.warn('[extract] todas as variantes de URL bloqueadas pelo YouTube (bot check)');
+    return lastBotResult;
+  }
+
+  return (
+    lastNoTextResult ??
+    buildResult({
+      success: false,
+      platform: 'youtube',
+      sourceType: 'none',
+      text: '',
+      message: NO_ACCESSIBLE_TEXT_MESSAGE,
+    })
+  );
+}
+
+async function extractYouTubeTextForUrl(url, jobDir) {
+  const metadata = await fetchVideoMetadata(url);
   logMetadataSummary('youtube', metadata);
 
-  const subtitleAttempt = await tryDownloadSubtitle(normalizedUrl, jobDir, metadata);
+  const subtitleAttempt = await tryDownloadSubtitle(url, jobDir, metadata);
   if (subtitleAttempt?.text) {
     return buildResult({
       success: true,
@@ -81,7 +134,18 @@ async function extractYouTubeText(url, jobDir) {
 }
 
 async function extractMetadataPlatformText(platform, url, jobDir) {
-  const metadata = await fetchVideoMetadata(url);
+  let metadata;
+
+  try {
+    metadata = await fetchVideoMetadata(url);
+  } catch (error) {
+    if (isYouTubeBotError(error)) {
+      return buildResult(buildYouTubeBotCheckResult(platform));
+    }
+
+    throw error;
+  }
+
   logMetadataSummary(platform, metadata);
 
   const subtitleAttempt = await tryDownloadSubtitle(url, jobDir, metadata);
@@ -178,17 +242,26 @@ function buildExtractionLog(metadata, subtitleAttempt) {
 
 async function fetchVideoMetadata(url) {
   const tools = await getTools();
-  const { stdout } = await runCommand(
-    tools.ytDlp,
-    [...ytDlpBaseArgs(), '--dump-single-json', '--no-download', url],
-    ytDlpCommandOptions('yt-dlp-meta', 'metadados do link'),
-  );
 
-  const trimmed = stdout.trim();
-  const jsonStart = trimmed.indexOf('{');
-  const jsonPayload = jsonStart >= 0 ? trimmed.slice(jsonStart) : trimmed;
+  try {
+    const { stdout } = await runCommand(
+      tools.ytDlp,
+      [...ytDlpBaseArgs(), '--dump-single-json', '--no-download', url],
+      ytDlpCommandOptions('yt-dlp-meta', 'metadados do link'),
+    );
 
-  return JSON.parse(jsonPayload);
+    const trimmed = stdout.trim();
+    const jsonStart = trimmed.indexOf('{');
+    const jsonPayload = jsonStart >= 0 ? trimmed.slice(jsonStart) : trimmed;
+
+    return JSON.parse(jsonPayload);
+  } catch (error) {
+    if (isYouTubeBotError(error)) {
+      throw error;
+    }
+
+    throw error;
+  }
 }
 
 async function tryDownloadSubtitle(url, jobDir, metadata) {
@@ -238,7 +311,11 @@ async function tryDownloadSubtitle(url, jobDir, metadata) {
         args,
         ytDlpCommandOptions('yt-dlp-sub', `legenda ${candidate.language} (${candidate.kind})`),
       );
-    } catch {
+    } catch (error) {
+      if (isYouTubeBotError(error)) {
+        throw error;
+      }
+
       continue;
     }
 
@@ -352,6 +429,10 @@ function buildResult(payload) {
     text: payload.text ?? '',
     message: payload.message,
   };
+
+  if (payload.code) {
+    result.code = payload.code;
+  }
 
   if (payload.log) {
     result.log = payload.log;

@@ -5,6 +5,11 @@ import { prepareAudio } from '../services/audioProcessor.js';
 import { classifySource, downloadAudio } from '../services/downloader.js';
 import { classifyLinkPlatform } from '../services/linkClassifier.js';
 import { extractLinkText } from '../services/linkTextExtractor.js';
+import {
+  buildYouTubeBotCheckResult,
+  isYouTubeBotError,
+  YOUTUBE_BOT_CHECK_CODE,
+} from '../services/youtubeBotError.js';
 import { config, isFreeLinkTextMode } from '../utils/config.js';
 import { CommandExecutionError } from '../utils/process.js';
 
@@ -29,6 +34,7 @@ export function createTranscriptionJob(url) {
     platform: '',
     sourceType: 'none',
     success: false,
+    code: '',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -130,6 +136,7 @@ export function getTranscriptionResult(id) {
     platform: job.platform ?? '',
     sourceType: job.sourceType ?? 'none',
     message: job.message ?? '',
+    code: job.code ?? '',
   };
 
   return result;
@@ -244,6 +251,7 @@ async function processFreeLinkJob(job, jobDir) {
       success: extraction.success,
       platform: extraction.platform,
       sourceType: extraction.sourceType,
+      code: extraction.code || undefined,
       title: extraction.log?.title || undefined,
     });
 
@@ -273,9 +281,28 @@ async function processFreeLinkJob(job, jobDir) {
       platform: extraction.platform,
       sourceType: extraction.sourceType,
       success: false,
+      code: extraction.code ?? '',
+      errorDetails: extraction.code === YOUTUBE_BOT_CHECK_CODE ? null : job.errorDetails,
     });
     await cleanupJobDir(job);
   } catch (error) {
+    if (isYouTubeBotError(error)) {
+      const bot = buildYouTubeBotCheckResult(job.platform || 'youtube');
+      console.warn(`[jobs] YouTube bot check: ${job.id}`);
+      updateJob(job, {
+        status: 'failed',
+        phase: 'erro',
+        progress: 100,
+        message: bot.message,
+        error: bot.message,
+        code: bot.code,
+        success: false,
+        errorDetails: null,
+      });
+      await cleanupJobDir(job);
+      return;
+    }
+
     const errorDetails = serializeError(error);
     console.error(`[jobs] extracao falhou: ${job.id}`, {
       message: errorDetails.message,
@@ -291,6 +318,7 @@ async function processFreeLinkJob(job, jobDir) {
       error: errorDetails.message,
       errorDetails,
       success: false,
+      code: errorDetails.code ?? '',
     });
     await cleanupJobDir(job);
   }
@@ -381,7 +409,11 @@ function publicJob(job) {
     payload.success = job.success ?? false;
   }
 
-  if (config.isDevelopment && job.errorDetails) {
+  if (job.code) {
+    payload.code = job.code;
+  }
+
+  if (config.isDevelopment && job.errorDetails && job.code !== YOUTUBE_BOT_CHECK_CODE) {
     payload.errorDetails = job.errorDetails;
   }
 
@@ -393,8 +425,28 @@ function publicJob(job) {
 }
 
 function serializeError(error) {
+  if (isYouTubeBotError(error)) {
+    const bot = buildYouTubeBotCheckResult();
+    return {
+      message: bot.message,
+      stdout: '',
+      stderr: '',
+      exitCode: null,
+      command: '',
+      strategy: '',
+      code: bot.code,
+    };
+  }
+
   if (error instanceof CommandExecutionError) {
-    return error.toDetails();
+    const details = error.toDetails();
+
+    if (isYouTubeBotError(error)) {
+      const bot = buildYouTubeBotCheckResult();
+      return { ...details, message: bot.message, code: bot.code, stdout: '', stderr: '' };
+    }
+
+    return details;
   }
 
   return {
@@ -404,5 +456,6 @@ function serializeError(error) {
     exitCode: null,
     command: '',
     strategy: '',
+    code: '',
   };
 }

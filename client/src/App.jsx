@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl, getApiBaseUrl } from './lib/api.js';
 import { failClientTranscription, runClientTranscription } from './lib/transcriptionClient.js';
 import { formatTranscriptionError } from './lib/debugLog.js';
+import { resolveJobUserMessage } from './lib/jobMessages.js';
 
 const IS_DEV = import.meta.env.DEV;
 
@@ -27,6 +28,7 @@ function createIdleJob(transcriptionMode) {
     platform: '',
     sourceType: 'none',
     success: false,
+    code: '',
   };
 }
 
@@ -364,7 +366,9 @@ function App() {
           <div className="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={job.progress}>
             <div style={{ width: `${job.progress}%` }} />
           </div>
-          <p className={job.status === 'failed' ? 'message error' : 'message'}>{job.message}</p>
+          <p className={job.status === 'failed' ? 'message error' : 'message'}>
+            {resolveJobUserMessage(job)}
+          </p>
           {isFreeMode && job.platform && (
             <p className="message meta">
               Plataforma: {job.platform}
@@ -373,7 +377,7 @@ function App() {
                 : ''}
             </p>
           )}
-          {IS_DEV && job.errorDetails && (
+          {IS_DEV && job.errorDetails && !job.code && (
             <pre className="error-details">{formatErrorDetails(job.errorDetails)}</pre>
           )}
         </section>

@@ -41,7 +41,7 @@ export function classifyLinkPlatform(inputUrl) {
   };
 }
 
-export function normalizeYouTubeUrl(inputUrl) {
+export function extractYouTubeVideoId(inputUrl) {
   const parsedUrl = new URL(inputUrl);
   const hostname = parsedUrl.hostname.replace(/^www\./, '').toLowerCase();
 
@@ -51,7 +51,7 @@ export function normalizeYouTubeUrl(inputUrl) {
       throw new Error('URL do YouTube invalida.');
     }
 
-    return `https://www.youtube.com/watch?v=${videoId}`;
+    return videoId;
   }
 
   if (hostname.includes('youtube.com')) {
@@ -60,8 +60,41 @@ export function normalizeYouTubeUrl(inputUrl) {
       throw new Error('URL do YouTube invalida.');
     }
 
-    return `https://www.youtube.com/watch?v=${videoId}`;
+    return videoId;
   }
 
-  return inputUrl;
+  throw new Error('URL do YouTube invalida.');
+}
+
+export function normalizeYouTubeUrl(inputUrl) {
+  const videoId = extractYouTubeVideoId(inputUrl);
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+/** Variantes para tentar quando o YouTube bloqueia (bot check). */
+export function getYouTubeUrlVariants(inputUrl) {
+  const trimmed = inputUrl.trim();
+  const variants = [];
+
+  const add = (url) => {
+    if (url && !variants.includes(url)) {
+      variants.push(url);
+    }
+  };
+
+  add(trimmed);
+
+  try {
+    const videoId = extractYouTubeVideoId(trimmed);
+    add(`https://www.youtube.com/watch?v=${videoId}`);
+    add(`https://youtu.be/${videoId}`);
+  } catch {
+    try {
+      add(normalizeYouTubeUrl(trimmed));
+    } catch {
+      // mantem apenas URL original
+    }
+  }
+
+  return variants;
 }
