@@ -3,8 +3,11 @@ import path from 'node:path';
 import { config } from '../utils/config.js';
 import { getTools } from '../utils/binaries.js';
 import { runCommand } from '../utils/process.js';
-import { classifyLinkPlatform, getYouTubeUrlVariants } from './linkClassifier.js';
+import { classifyLinkPlatform, extractYouTubeVideoId, getYouTubeUrlVariants } from './linkClassifier.js';
 import { subtitleFileToPlainText } from './subtitleParser.js';
+import { getYouTubeExtractStrategies } from './youtubeExtractStrategies.js';
+import { initYtDlpCookies } from '../utils/ytDlpCookies.js';
+import { fetchYouTubeTimedTextCaptions } from './youtubeTimedText.js';
 import {
   buildYouTubeBotCheckResult,
   isYouTubeBotError,
@@ -47,39 +50,70 @@ export async function extractLinkText(inputUrl, jobDir) {
 }
 
 async function extractYouTubeText(inputUrl, jobDir) {
+  await initYtDlpCookies();
+
   const variants = getYouTubeUrlVariants(inputUrl);
+  const strategies = getYouTubeExtractStrategies();
   let lastBotResult = null;
   let lastNoTextResult = null;
 
   for (const variantUrl of variants) {
-    console.log('[extract] tentando URL YouTube:', variantUrl);
+    for (const strategy of strategies) {
+      console.log('[extract] YouTube:', { url: variantUrl, strategy: strategy.id });
 
-    try {
-      const result = await extractYouTubeTextForUrl(variantUrl, jobDir);
+      try {
+        const result = await extractYouTubeTextForUrl(variantUrl, jobDir, strategy);
 
-      if (result.success) {
-        return result;
+        if (result.success) {
+          console.log('[extract] sucesso via', strategy.id);
+          return result;
+        }
+
+        if (result.code === YOUTUBE_BOT_CHECK_CODE) {
+          lastBotResult = result;
+          continue;
+        }
+
+        lastNoTextResult = result;
+      } catch (error) {
+        if (isYouTubeBotError(error)) {
+          console.warn('[extract] bot check:', { url: variantUrl, strategy: strategy.id });
+          lastBotResult = buildResult(buildYouTubeBotCheckResult('youtube'));
+          continue;
+        }
+
+        throw error;
       }
-
-      if (result.code === YOUTUBE_BOT_CHECK_CODE) {
-        lastBotResult = result;
-        continue;
-      }
-
-      lastNoTextResult = result;
-    } catch (error) {
-      if (isYouTubeBotError(error)) {
-        console.warn('[extract] YouTube bot check:', variantUrl);
-        lastBotResult = buildResult(buildYouTubeBotCheckResult('youtube'));
-        continue;
-      }
-
-      throw error;
     }
   }
 
+  // Fallback: API timedtext (sem yt-dlp)
+  try {
+    const videoId = extractYouTubeVideoId(inputUrl);
+    console.log('[extract] tentando timedtext API:', videoId);
+    const timed = await fetchYouTubeTimedTextCaptions(videoId);
+
+    if (timed?.text) {
+      console.log('[extract] sucesso via timedtext', { language: timed.language });
+      return buildResult({
+        success: true,
+        platform: 'youtube',
+        sourceType: timed.sourceType,
+        text: timed.text,
+        message: `Texto obtido de ${describeSourceType(timed.sourceType)} (${timed.language}) via API de legendas.`,
+        log: {
+          title: '',
+          subtitleLanguage: timed.language,
+          sourceType: timed.sourceType,
+        },
+      });
+    }
+  } catch (error) {
+    console.warn('[extract] timedtext falhou:', error instanceof Error ? error.message : error);
+  }
+
   if (lastBotResult) {
-    console.warn('[extract] todas as variantes de URL bloqueadas pelo YouTube (bot check)');
+    console.warn('[extract] YouTube bloqueou yt-dlp; timedtext tambem sem resultado');
     return lastBotResult;
   }
 
@@ -95,11 +129,22 @@ async function extractYouTubeText(inputUrl, jobDir) {
   );
 }
 
-async function extractYouTubeTextForUrl(url, jobDir) {
-  const metadata = await fetchVideoMetadata(url);
+async function extractYouTubeTextForUrl(url, jobDir, strategy) {
+  let metadata;
+
+  try {
+    metadata = await fetchVideoMetadata(url, strategy);
+  } catch (error) {
+    if (isYouTubeBotError(error)) {
+      return buildResult(buildYouTubeBotCheckResult('youtube'));
+    }
+
+    throw error;
+  }
+
   logMetadataSummary('youtube', metadata);
 
-  const subtitleAttempt = await tryDownloadSubtitle(url, jobDir, metadata);
+  const subtitleAttempt = await tryDownloadSubtitle(url, jobDir, metadata, strategy);
   if (subtitleAttempt?.text) {
     return buildResult({
       success: true,
@@ -134,10 +179,11 @@ async function extractYouTubeTextForUrl(url, jobDir) {
 }
 
 async function extractMetadataPlatformText(platform, url, jobDir) {
+  const strategy = getYouTubeExtractStrategies()[0];
   let metadata;
 
   try {
-    metadata = await fetchVideoMetadata(url);
+    metadata = await fetchVideoMetadata(url, strategy);
   } catch (error) {
     if (isYouTubeBotError(error)) {
       return buildResult(buildYouTubeBotCheckResult(platform));
@@ -148,7 +194,7 @@ async function extractMetadataPlatformText(platform, url, jobDir) {
 
   logMetadataSummary(platform, metadata);
 
-  const subtitleAttempt = await tryDownloadSubtitle(url, jobDir, metadata);
+  const subtitleAttempt = await tryDownloadSubtitle(url, jobDir, metadata, strategy);
   if (subtitleAttempt?.text) {
     return buildResult({
       success: true,
@@ -199,11 +245,15 @@ async function extractMetadataPlatformText(platform, url, jobDir) {
   });
 }
 
-function ytDlpBaseArgs() {
+function ytDlpBaseArgs(strategy) {
   const args = ['--no-warnings'];
 
   if (!config.debugYtDlp) {
     args.push('--quiet', '--no-progress');
+  }
+
+  if (strategy?.extraArgs?.length) {
+    args.push(...strategy.extraArgs);
   }
 
   return args;
@@ -212,7 +262,7 @@ function ytDlpBaseArgs() {
 function ytDlpCommandOptions(logPrefix, strategy) {
   return {
     logPrefix,
-    strategy,
+    strategy: strategy?.label ?? strategy?.id ?? 'padrao',
     quiet: !config.debugYtDlp,
   };
 }
@@ -240,31 +290,23 @@ function buildExtractionLog(metadata, subtitleAttempt) {
   return log;
 }
 
-async function fetchVideoMetadata(url) {
+async function fetchVideoMetadata(url, strategy) {
   const tools = await getTools();
 
-  try {
-    const { stdout } = await runCommand(
-      tools.ytDlp,
-      [...ytDlpBaseArgs(), '--dump-single-json', '--no-download', url],
-      ytDlpCommandOptions('yt-dlp-meta', 'metadados do link'),
-    );
+  const { stdout } = await runCommand(
+    tools.ytDlp,
+    [...ytDlpBaseArgs(strategy), '--dump-single-json', '--no-download', url],
+    ytDlpCommandOptions('yt-dlp-meta', strategy),
+  );
 
-    const trimmed = stdout.trim();
-    const jsonStart = trimmed.indexOf('{');
-    const jsonPayload = jsonStart >= 0 ? trimmed.slice(jsonStart) : trimmed;
+  const trimmed = stdout.trim();
+  const jsonStart = trimmed.indexOf('{');
+  const jsonPayload = jsonStart >= 0 ? trimmed.slice(jsonStart) : trimmed;
 
-    return JSON.parse(jsonPayload);
-  } catch (error) {
-    if (isYouTubeBotError(error)) {
-      throw error;
-    }
-
-    throw error;
-  }
+  return JSON.parse(jsonPayload);
 }
 
-async function tryDownloadSubtitle(url, jobDir, metadata) {
+async function tryDownloadSubtitle(url, jobDir, metadata, strategy) {
   const manualTracks = metadata.subtitles ?? {};
   const autoTracks = metadata.automatic_captions ?? {};
   const candidates = [];
@@ -289,11 +331,11 @@ async function tryDownloadSubtitle(url, jobDir, metadata) {
   const tools = await getTools();
 
   for (const candidate of ordered) {
-    const subDir = path.join(jobDir, `subs-${candidate.language}-${candidate.kind}`);
+    const subDir = path.join(jobDir, `subs-${candidate.language}-${candidate.kind}-${strategy.id}`);
     await fs.mkdir(subDir, { recursive: true });
 
     const args = [
-      ...ytDlpBaseArgs(),
+      ...ytDlpBaseArgs(strategy),
       '--skip-download',
       candidate.kind === 'manual' ? '--write-subs' : '--write-auto-subs',
       '--sub-langs',
@@ -309,7 +351,10 @@ async function tryDownloadSubtitle(url, jobDir, metadata) {
       await runCommand(
         tools.ytDlp,
         args,
-        ytDlpCommandOptions('yt-dlp-sub', `legenda ${candidate.language} (${candidate.kind})`),
+        ytDlpCommandOptions('yt-dlp-sub', {
+          id: strategy.id,
+          label: `legenda ${candidate.language} (${strategy.id})`,
+        }),
       );
     } catch (error) {
       if (isYouTubeBotError(error)) {
@@ -334,6 +379,7 @@ async function tryDownloadSubtitle(url, jobDir, metadata) {
       console.log('[extract] legenda escolhida', {
         language: candidate.language,
         sourceType: candidate.sourceType,
+        strategy: strategy.id,
         ...(config.debugYtDlp ? { subtitleFilePath } : {}),
       });
 

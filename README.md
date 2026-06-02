@@ -267,6 +267,24 @@ Resposta esperada:
 | `npm run render:start` | Start em producao (`node server/index.js`) |
 | `npm run mobile` | Local: build + servidor na porta 3001 |
 
+### YouTube bloqueado no Render (bot check)
+
+O app tenta automaticamente:
+
+1. Varias URLs do mesmo video (`watch?v=`, `youtu.be/`)
+2. Varios clientes yt-dlp (`android_vr`, `ios`, `tv_embedded`, etc.)
+3. API de legendas `timedtext` (sem yt-dlp)
+
+Se ainda falhar, configure no Render a variavel **`YT_DLP_COOKIES_CONTENT`**:
+
+1. No PC, abra YouTube logado no Chrome
+2. Instale a extensao **Get cookies.txt LOCALLY**
+3. Exporte cookies para `youtube.com` (formato Netscape)
+4. Cole o conteudo inteiro em `YT_DLP_COOKIES_CONTENT` no painel Environment do Render
+5. Redeploy
+
+Isso nao exige login no app — apenas cookies no servidor.
+
 ### Limitacoes no Render (plano free)
 
 - O servico **hiberna** apos inatividade; o primeiro acesso pode demorar ~30s.

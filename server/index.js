@@ -14,6 +14,7 @@ import {
 import { bootstrapTools, bootstrapYtDlpOnly } from './utils/binaries.js';
 import { config, isFreeLinkTextMode, isOpenAiMode } from './utils/config.js';
 import { getLanIpv4Addresses, getPrimaryLanIp } from './utils/network.js';
+import { initYtDlpCookies } from './utils/ytDlpCookies.js';
 
 const app = express();
 const clientDist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'client', 'dist');
