@@ -1,0 +1,34 @@
+{
+  "name": "transcricao-video",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MVP web para transcricao de video ou audio por link.",
+  "scripts": {
+    "dev": "concurrently --handle-input false --success first --kill-others-on-fail false -n server,client -c blue,green \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
+    "mobile": "npm run build --workspace client && npm run start --workspace server",
+    "dev:mobile": "npm run build --workspace client && npm run dev --workspace server",
+    "dev:client": "npm run dev --workspace client",
+    "dev:server": "npm run dev --workspace server",
+    "install:all": "npm install",
+    "build": "npm run build --workspace client",
+    "start": "npm run start --workspace server",
+    "render:build": "bash scripts/render-build.sh",
+    "render:start": "node server/index.js",
+    "prestart": "node scripts/prestart.mjs",
+    "premobile": "node scripts/prestart.mjs",
+    "supabase:sync-openai-key": "node scripts/set-supabase-openai-secret.mjs",
+    "supabase:deploy-transcrever": "npx supabase functions deploy transcrever --project-ref utlcsmhtzqhbndqxninf",
+    "test:parser": "node --test server/services/subtitleParser.test.mjs",
+    "firewall:open": "powershell -ExecutionPolicy Bypass -File scripts/open-firewall-port.ps1"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "devDependencies": {
+    "concurrently": "latest"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

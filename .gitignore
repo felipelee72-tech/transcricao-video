@@ -1,0 +1,38 @@
+# Dependencias
+node_modules/
+
+# Ambiente (nunca commitar)
+.env
+.env.*
+!.env.example
+
+# Builds
+dist/
+client/dist/
+
+# Ferramentas locais copiadas
+.bin/
+
+# Supabase CLI (cache local — nao versionar)
+supabase/.temp/
+
+# Temporarios e downloads
+tmp/
+temp/
+server/tmp/
+downloads/
+transcriptions/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Testes locais
+tmp-test/
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,4 @@
+project_id = "transcricao-video"
+
+[functions.transcrever]
+verify_jwt = false

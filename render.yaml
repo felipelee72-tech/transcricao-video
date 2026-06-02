@@ -1,0 +1,24 @@
+# Blueprint Render: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: transcricao-video
+    runtime: node
+    plan: free
+    buildCommand: bash scripts/render-build.sh
+    startCommand: npm run render:start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRANSCRIPTION_MODE
+        value: free-link-text
+      - key: SERVE_CLIENT
+        value: "true"
+      - key: ALLOW_LAN_ORIGINS
+        value: "true"
+      - key: DEBUG_YTDLP
+        value: "false"
+      - key: APP_PASSWORD
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
