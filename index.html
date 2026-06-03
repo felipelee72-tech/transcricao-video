@@ -344,24 +344,165 @@
         return TRANSCRIPT_API + '/' + encodeURIComponent(videoId) + '.txt' + suffix;
       }
 
+      function decodeHtmlEntities(text) {
+        return String(text || '')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/&amp;/gi, '&')
+          .replace(/&lt;/gi, '<')
+          .replace(/&gt;/gi, '>')
+          .replace(/&quot;/gi, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&#x27;/gi, "'")
+          .replace(/&#(\d+);/g, function (_, code) {
+            return String.fromCharCode(Number(code));
+          });
+      }
+
+      function cleanCueLine(line) {
+        return decodeHtmlEntities(line)
+          .replace(/<[^>]*>/g, '')
+          .replace(/^[>›»]+\s*/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      function extractTranscriptCueLines(body) {
+        const lines = [];
+        const timestampRe = /\[(\d{1,2}:)?\d{1,2}:\d{2}(?::\d{2})?\]\s*/g;
+        const markers = [];
+        let match;
+
+        while ((match = timestampRe.exec(body)) !== null) {
+          markers.push({ start: match.index, end: match.index + match[0].length });
+        }
+
+        if (markers.length > 0) {
+          for (let i = 0; i < markers.length; i++) {
+            const chunkStart = markers[i].end;
+            const chunkEnd = i + 1 < markers.length ? markers[i + 1].start : body.length;
+            const chunk = body.slice(chunkStart, chunkEnd).replace(/\n+/g, ' ').trim();
+            const cleaned = cleanCueLine(chunk);
+            if (cleaned) {
+              lines.push(cleaned);
+            }
+          }
+          return lines;
+        }
+
+        return body
+          .split(/\n+/)
+          .map(function (row) {
+            return cleanCueLine(row.replace(/^\[[\d:]+\]\s*/, ''));
+          })
+          .filter(Boolean);
+      }
+
+      function splitSpeakerSegments(text) {
+        return String(text || '')
+          .split(/\s*(?:>>|››|»»)\s*/g)
+          .map(cleanCueLine)
+          .filter(Boolean);
+      }
+
+      function collapseInlineRepeats(text) {
+        let result = cleanCueLine(text);
+        if (!result) {
+          return '';
+        }
+
+        for (let pass = 0; pass < 10; pass++) {
+          const repeated = result.match(/(.{4,}?)(?:\s+\1){1,}/);
+          if (!repeated) {
+            break;
+          }
+          const phrase = repeated[1];
+          const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          result = result.replace(new RegExp('(' + escaped + ')(?:\\s+\\1)+', 'g'), '$1');
+        }
+
+        return result.trim();
+      }
+
+      function expandCueLines(lines) {
+        const expanded = [];
+
+        for (let i = 0; i < lines.length; i++) {
+          const cleaned = cleanCueLine(lines[i]);
+          if (!cleaned) {
+            continue;
+          }
+
+          const segments = splitSpeakerSegments(cleaned);
+          if (segments.length > 1) {
+            for (let j = 0; j < segments.length; j++) {
+              const segment = collapseInlineRepeats(segments[j]);
+              if (segment) {
+                expanded.push(segment);
+              }
+            }
+          } else {
+            const segment = collapseInlineRepeats(cleaned);
+            if (segment) {
+              expanded.push(segment);
+            }
+          }
+        }
+
+        return expanded;
+      }
+
+      function deduplicateRollingCaptions(lines) {
+        const uniqueLines = [];
+        const seenExact = new Set();
+        const expanded = expandCueLines(lines);
+
+        for (let i = 0; i < expanded.length; i++) {
+          const cleaned = expanded[i];
+          const key = normalizeForComparison(cleaned);
+          if (!key) {
+            continue;
+          }
+
+          if (uniqueLines.length > 0) {
+            const lastIndex = uniqueLines.length - 1;
+            const lastKey = normalizeForComparison(uniqueLines[lastIndex]);
+
+            if (key === lastKey) {
+              continue;
+            }
+
+            if (key.startsWith(lastKey) || lastKey.startsWith(key)) {
+              if (key.length >= lastKey.length) {
+                seenExact.delete(lastKey);
+                uniqueLines[lastIndex] = cleaned;
+                seenExact.add(key);
+              }
+              continue;
+            }
+          }
+
+          if (seenExact.has(key)) {
+            continue;
+          }
+
+          uniqueLines.push(cleaned);
+          seenExact.add(key);
+        }
+
+        return uniqueLines;
+      }
+
       function parseTranscriptTxt(raw) {
         const text = String(raw || '');
         if (!text.includes('## Transcript')) {
           return '';
         }
 
-        const body = text.split('## Transcript')[1] || '';
-        const paragraphs = body
-          .split(/\n\n+/)
-          .map(function (block) {
-            return block
-              .replace(/^\[[\d:]+\]\s*/gm, '')
-              .replace(/\s+/g, ' ')
-              .trim();
-          })
-          .filter(Boolean);
+        const body = (text.split('## Transcript')[1] || '').split(/^---$/m)[0];
+        const cueLines = extractTranscriptCueLines(body);
+        const uniqueLines = deduplicateRollingCaptions(cueLines);
 
-        return buildParagraphs(deduplicateLines(paragraphs));
+        return buildParagraphs(uniqueLines);
       }
 
       function readTranscriptLanguage(raw) {
@@ -517,20 +658,11 @@
       }
 
       function deduplicateLines(lines) {
-        const uniqueLines = [];
-        const recentKeys = [];
-
-        for (let i = 0; i < lines.length; i++) {
-          const displayLine = lines[i];
-          const key = normalizeForComparison(displayLine);
-          if (!key) continue;
-          if (recentKeys.indexOf(key) !== -1) continue;
-          uniqueLines.push(displayLine);
-          recentKeys.push(key);
-          if (recentKeys.length > 5) recentKeys.shift();
-        }
-
-        return uniqueLines;
+        return deduplicateRollingCaptions(
+          lines.map(function (line) {
+            return cleanCueLine(line);
+          }),
+        );
       }
 
       function endsWithSentencePunctuation(text) {
@@ -539,6 +671,18 @@
 
       function buildParagraphs(lines) {
         if (lines.length === 0) return '';
+
+        const sentences = [];
+        for (let i = 0; i < lines.length; i++) {
+          const parts = lines[i].split(/(?<=[.!?…])\s+/u).filter(Boolean);
+          if (parts.length > 1) {
+            for (let j = 0; j < parts.length; j++) {
+              sentences.push(parts[j].trim());
+            }
+          } else {
+            sentences.push(lines[i]);
+          }
+        }
 
         const paragraphs = [];
         let block = [];
@@ -549,11 +693,11 @@
           block = [];
         }
 
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          block.push(line);
-          const reachedMax = block.length >= 6;
-          const reachedMin = block.length >= 4 && endsWithSentencePunctuation(line);
+        for (let i = 0; i < sentences.length; i++) {
+          const sentence = sentences[i];
+          block.push(sentence);
+          const reachedMax = block.length >= 5;
+          const reachedMin = block.length >= 3 && endsWithSentencePunctuation(sentence);
           if (reachedMax || reachedMin) flushBlock();
         }
 
@@ -574,13 +718,14 @@
               return e.segs;
             })
             .map(function (e) {
-              return e.segs
-                .map(function (s) {
-                  return (s.utf8 || '').replace(/\n/g, ' ');
-                })
-                .join('')
-                .replace(/\s+/g, ' ')
-                .trim();
+              return cleanCueLine(
+                e.segs
+                  .map(function (s) {
+                    return s.utf8 || '';
+                  })
+                  .join('')
+                  .replace(/\n/g, ' '),
+              );
             })
             .filter(Boolean);
 
