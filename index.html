@@ -572,6 +572,62 @@
           .filter(Boolean);
       }
 
+      const MIN_MIDBLOCK_REPEAT_WORDS = 8;
+
+      function tokenizeWords(text) {
+        return String(text || '')
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+      }
+
+      function normalizeWordForRepeat(word) {
+        return String(word || '')
+          .toLowerCase()
+          .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+      }
+
+      function wordsMatchAt(words, startA, startB, length) {
+        for (let offset = 0; offset < length; offset++) {
+          const a = normalizeWordForRepeat(words[startA + offset]);
+          const b = normalizeWordForRepeat(words[startB + offset]);
+
+          if (!a || !b || a !== b) {
+            return false;
+          }
+        }
+
+        return true;
+      }
+
+      function removeMidBlockLiteralRepeats(text) {
+        let words = tokenizeWords(cleanCueLine(text));
+
+        if (words.length < MIN_MIDBLOCK_REPEAT_WORDS * 2) {
+          return words.join(' ');
+        }
+
+        let changed = true;
+
+        while (changed) {
+          changed = false;
+
+          outer: for (let i = 0; i <= words.length - MIN_MIDBLOCK_REPEAT_WORDS * 2; i++) {
+            const maxLen = Math.floor((words.length - i) / 2);
+
+            for (let len = maxLen; len >= MIN_MIDBLOCK_REPEAT_WORDS; len--) {
+              if (wordsMatchAt(words, i, i + len, len)) {
+                words = words.slice(0, i).concat(words.slice(i + len));
+                changed = true;
+                break outer;
+              }
+            }
+          }
+        }
+
+        return words.join(' ').trim();
+      }
+
       function collapseInlineRepeats(text) {
         let result = cleanCueLine(text);
         if (!result) {
@@ -588,6 +644,7 @@
           result = result.replace(new RegExp('(' + escaped + ')(?:\\s+\\1)+', 'g'), '$1');
         }
 
+        result = removeMidBlockLiteralRepeats(result);
         return result.trim();
       }
 
@@ -695,7 +752,7 @@
           return '';
         }
 
-        return deduped
+        let block = deduped
           .map(function (entry) {
             return collapseInlineRepeats(cleanCueLine(entry.raw || entry));
           })
@@ -703,6 +760,8 @@
           .join(' ')
           .replace(/\s+/g, ' ')
           .trim();
+
+        return removeMidBlockLiteralRepeats(block);
       }
 
       function mergePrefixSpeakerBlocks(blocks) {
