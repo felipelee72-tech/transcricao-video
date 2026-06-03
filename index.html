@@ -267,16 +267,25 @@
     </main>
 
     <footer>
-      Usa legendas públicas do YouTube. Vídeos sem legenda não podem ser transcritos.
+      Legendas via API pública de transcrição. Vídeos sem legenda disponível não podem ser transcritos.
     </footer>
   </div>
 
   <script>
     (function () {
-      const FETCH_TIMEOUT_MS = 20000;
+      const FETCH_TIMEOUT_MS = 25000;
       const TIMEDTEXT_BASE = 'https://www.youtube.com/api/timedtext';
+      const TRANSCRIPT_API = 'https://youtube-transcript.ai/transcript';
 
-      const CAPTION_TRACKS = [
+      const LANG_ATTEMPTS = [
+        { id: 'pt-BR', lang: 'pt-BR' },
+        { id: 'pt', lang: 'pt' },
+        { id: 'en', lang: 'en' },
+        { id: 'a.en', lang: 'a-en' },
+        { id: 'auto', lang: '' },
+      ];
+
+      const TIMEDTEXT_TRACKS = [
         { id: 'pt-BR', lang: 'pt-BR', auto: false },
         { id: 'pt', lang: 'pt', auto: false },
         { id: 'en', lang: 'en', auto: false },
@@ -284,7 +293,7 @@
         { id: 'a.en', lang: 'en', auto: true },
       ];
 
-      const FETCH_MODES = [
+      const PROXY_MODES = [
         { id: 'direct', wrap: function (url) { return url; }, parse: parseDirectBody },
         {
           id: 'allorigins',
@@ -328,6 +337,102 @@
           params.set('kind', 'asr');
         }
         return TIMEDTEXT_BASE + '?' + params.toString();
+      }
+
+      function buildTranscriptApiUrl(videoId, lang) {
+        const suffix = lang ? '?lang=' + encodeURIComponent(lang) : '';
+        return TRANSCRIPT_API + '/' + encodeURIComponent(videoId) + '.txt' + suffix;
+      }
+
+      function parseTranscriptTxt(raw) {
+        const text = String(raw || '');
+        if (!text.includes('## Transcript')) {
+          return '';
+        }
+
+        const body = text.split('## Transcript')[1] || '';
+        const paragraphs = body
+          .split(/\n\n+/)
+          .map(function (block) {
+            return block
+              .replace(/^\[[\d:]+\]\s*/gm, '')
+              .replace(/\s+/g, ' ')
+              .trim();
+          })
+          .filter(Boolean);
+
+        return buildParagraphs(deduplicateLines(paragraphs));
+      }
+
+      function readTranscriptLanguage(raw) {
+        const match = String(raw || '').match(/^Language:\s*(.+)$/m);
+        return match ? match[1].trim() : '';
+      }
+
+      function transcriptMatchesAttempt(attempt, reportedLang) {
+        const reported = String(reportedLang || '').toLowerCase();
+
+        if (attempt.lang === 'pt-BR') {
+          return reported.indexOf('pt-br') !== -1 || reported.indexOf('pt') === 0;
+        }
+
+        if (attempt.lang === 'pt') {
+          return reported.indexOf('pt') !== -1;
+        }
+
+        if (attempt.lang === 'en' || attempt.lang === 'a-en') {
+          return reported.indexOf('en') !== -1;
+        }
+
+        return reported.length > 0;
+      }
+
+      async function fetchTranscriptFromApi(videoId, attempt) {
+        const url = buildTranscriptApiUrl(videoId, attempt.lang);
+        const response = await fetchWithTimeout(url, { headers: { Accept: 'text/plain' } }, FETCH_TIMEOUT_MS);
+
+        if (!response.ok) {
+          return null;
+        }
+
+        const raw = await response.text();
+        const text = parseTranscriptTxt(raw);
+        if (!text) {
+          return null;
+        }
+
+        const reportedLang = readTranscriptLanguage(raw);
+        if (attempt.lang && !transcriptMatchesAttempt(attempt, reportedLang)) {
+          return null;
+        }
+
+        const auto = /auto/i.test(reportedLang);
+
+        return {
+          language: attempt.id,
+          sourceType: auto ? 'auto-caption' : 'subtitle',
+          text: text,
+        };
+      }
+
+      async function fetchCaptionsFromTranscriptApi(videoId, onProgress) {
+        for (let i = 0; i < LANG_ATTEMPTS.length; i++) {
+          const attempt = LANG_ATTEMPTS[i];
+          if (onProgress) {
+            onProgress(attempt.id);
+          }
+
+          try {
+            const result = await fetchTranscriptFromApi(videoId, attempt);
+            if (result) {
+              return result;
+            }
+          } catch {
+            /* tenta próximo idioma */
+          }
+        }
+
+        return null;
       }
 
       function parseDirectBody(body) {
@@ -502,8 +607,8 @@
       async function fetchCaptionForTrack(videoId, track) {
         const apiUrl = buildTimedTextUrl(videoId, track);
 
-        for (let m = 0; m < FETCH_MODES.length; m++) {
-          const mode = FETCH_MODES[m];
+        for (let m = 0; m < PROXY_MODES.length; m++) {
+          const mode = PROXY_MODES[m];
           try {
             const body = await fetchTimedTextBody(apiUrl, mode);
             if (!body) continue;
@@ -525,8 +630,8 @@
       }
 
       async function fetchCaptionsFromTimedText(videoId, onProgress) {
-        for (let t = 0; t < CAPTION_TRACKS.length; t++) {
-          const track = CAPTION_TRACKS[t];
+        for (let t = 0; t < TIMEDTEXT_TRACKS.length; t++) {
+          const track = TIMEDTEXT_TRACKS[t];
           if (onProgress) {
             onProgress(track.id);
           }
@@ -546,7 +651,14 @@
           throw new Error('URL inválida. Cole um link do YouTube (watch, shorts ou youtu.be).');
         }
 
-        const result = await fetchCaptionsFromTimedText(videoId, onProgress);
+        let result = await fetchCaptionsFromTranscriptApi(videoId, onProgress);
+
+        if (!result) {
+          if (onProgress) {
+            onProgress('timedtext');
+          }
+          result = await fetchCaptionsFromTimedText(videoId, onProgress);
+        }
 
         if (!result || !result.text.trim()) {
           throw new Error(
