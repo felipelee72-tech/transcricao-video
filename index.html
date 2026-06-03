@@ -273,10 +273,41 @@
 
   <script>
     (function () {
-      const CORS_PROXY = 'https://corsproxy.io/?url=';
       const FETCH_TIMEOUT_MS = 20000;
-      const MAX_TRACK_ATTEMPTS = 6;
-      const PREFERRED_LANGS = ['pt-BR', 'pt', 'pt-PT', 'por', 'en', 'en-US', 'es'];
+      const TIMEDTEXT_BASE = 'https://www.youtube.com/api/timedtext';
+
+      const CAPTION_TRACKS = [
+        { id: 'pt-BR', lang: 'pt-BR', auto: false },
+        { id: 'pt', lang: 'pt', auto: false },
+        { id: 'en', lang: 'en', auto: false },
+        { id: 'a.pt', lang: 'pt', auto: true },
+        { id: 'a.en', lang: 'en', auto: true },
+      ];
+
+      const FETCH_MODES = [
+        { id: 'direct', wrap: function (url) { return url; }, parse: parseDirectBody },
+        {
+          id: 'allorigins',
+          wrap: function (url) {
+            return 'https://api.allorigins.win/get?url=' + encodeURIComponent(url);
+          },
+          parse: parseAllOriginsBody,
+        },
+        {
+          id: 'corsproxy',
+          wrap: function (url) {
+            return 'https://corsproxy.io/?' + encodeURIComponent(url);
+          },
+          parse: parseDirectBody,
+        },
+        {
+          id: 'codetabs',
+          wrap: function (url) {
+            return 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url);
+          },
+          parse: parseDirectBody,
+        },
+      ];
 
       const form = document.getElementById('form');
       const urlInput = document.getElementById('url');
@@ -287,8 +318,29 @@
       const outputEl = document.getElementById('output');
       const metaLang = document.getElementById('metaLang');
 
-      function proxyUrl(target) {
-        return CORS_PROXY + encodeURIComponent(target);
+      function buildTimedTextUrl(videoId, track) {
+        const params = new URLSearchParams({
+          v: videoId,
+          lang: track.lang,
+          fmt: 'json3',
+        });
+        if (track.auto) {
+          params.set('kind', 'asr');
+        }
+        return TIMEDTEXT_BASE + '?' + params.toString();
+      }
+
+      function parseDirectBody(body) {
+        return typeof body === 'string' ? body : '';
+      }
+
+      function parseAllOriginsBody(body) {
+        try {
+          const wrapper = JSON.parse(body);
+          return typeof wrapper.contents === 'string' ? wrapper.contents : '';
+        } catch {
+          return '';
+        }
       }
 
       function setStatus(message, type) {
@@ -350,137 +402,6 @@
         }
       }
 
-      function extractYtInitialPlayerResponse(html) {
-        const markers = ['ytInitialPlayerResponse = ', 'var ytInitialPlayerResponse = '];
-
-        for (let i = 0; i < markers.length; i++) {
-          const index = html.indexOf(markers[i]);
-          if (index === -1) continue;
-          const parsed = parseJsonObjectFrom(html, index + markers[i].length);
-          if (parsed) return parsed;
-        }
-
-        return null;
-      }
-
-      function parseJsonObjectFrom(text, startIndex) {
-        const start = text.indexOf('{', startIndex);
-        if (start === -1) return null;
-
-        let depth = 0;
-        for (let index = start; index < text.length; index++) {
-          const char = text[index];
-          if (char === '{') depth += 1;
-          else if (char === '}') {
-            depth -= 1;
-            if (depth === 0) {
-              try {
-                return JSON.parse(text.slice(start, index + 1));
-              } catch {
-                return null;
-              }
-            }
-          }
-        }
-        return null;
-      }
-
-      function orderCaptionTracks(tracks) {
-        const normalized = tracks
-          .filter(function (t) {
-            return typeof t.baseUrl === 'string' && t.baseUrl.length > 0;
-          })
-          .map(function (t) {
-            return {
-              languageCode: t.languageCode || '',
-              kind: t.kind || '',
-              baseUrl: t.baseUrl,
-            };
-          });
-
-        const unique = [];
-        const seen = new Set();
-
-        for (let p = 0; p < PREFERRED_LANGS.length; p++) {
-          const preferred = PREFERRED_LANGS[p];
-          for (let i = 0; i < normalized.length; i++) {
-            const track = normalized[i];
-            const key = track.languageCode + ':' + track.kind;
-            if (seen.has(key)) continue;
-            if (track.languageCode === preferred || track.languageCode.indexOf(preferred + '-') === 0) {
-              unique.push(track);
-              seen.add(key);
-            }
-          }
-        }
-
-        for (let i = 0; i < normalized.length; i++) {
-          const track = normalized[i];
-          const key = track.languageCode + ':' + track.kind;
-          if (!seen.has(key)) {
-            unique.push(track);
-            seen.add(key);
-          }
-        }
-
-        return unique.sort(function (left, right) {
-          const leftAsr = left.kind === 'asr' ? 1 : 0;
-          const rightAsr = right.kind === 'asr' ? 1 : 0;
-          return leftAsr - rightAsr;
-        });
-      }
-
-      const TIMESTAMP_LINE =
-        /^\d{1,2}:\d{2}(?::\d{2})?[.,]\d{0,3}\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?[.,]\d{0,3}/;
-      const SRT_TIMESTAMP_LINE =
-        /^\d{1,2}:\d{2}:\d{2}[.,]\d{0,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[.,]\d{0,3}/;
-
-      function subtitleFileToPlainText(content) {
-        const cueLines = extractCueLines(content);
-        const uniqueLines = deduplicateLines(cueLines);
-        return buildParagraphs(uniqueLines);
-      }
-
-      function extractCueLines(content) {
-        const lines = content.replace(/\r/g, '').split('\n');
-        const cueLines = [];
-
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (shouldSkipLine(line)) continue;
-          const cleaned = cleanCueLine(line);
-          if (cleaned) cueLines.push(cleaned);
-        }
-
-        return cueLines;
-      }
-
-      function shouldSkipLine(line) {
-        if (!line) return true;
-        if (line === 'WEBVTT' || /^WEBVTT\b/i.test(line)) return true;
-        if (/^Kind:/i.test(line) || /^Language:/i.test(line)) return true;
-        if (line.startsWith('NOTE') || line.startsWith('STYLE') || line.startsWith('REGION')) return true;
-        if (/^X-TIMESTAMP-MAP=/i.test(line)) return true;
-        if (/^\d+$/.test(line)) return true;
-        if (TIMESTAMP_LINE.test(line) || SRT_TIMESTAMP_LINE.test(line)) return true;
-        if (/^(align|position|line|size|vertical):/i.test(line)) return true;
-        return false;
-      }
-
-      function cleanCueLine(line) {
-        return line
-          .replace(/<[\d:.]+>/g, '')
-          .replace(/<[^>]*>/g, '')
-          .replace(/&nbsp;/gi, ' ')
-          .replace(/&amp;/gi, '&')
-          .replace(/&lt;/gi, '<')
-          .replace(/&gt;/gi, '>')
-          .replace(/&quot;/gi, '"')
-          .replace(/&#39;/g, "'")
-          .replace(/\s+/g, ' ')
-          .trim();
-      }
-
       function normalizeForComparison(text) {
         return text
           .trim()
@@ -537,7 +458,12 @@
 
       function parseJson3Captions(raw) {
         try {
-          const data = JSON.parse(raw);
+          const trimmed = String(raw || '').trim();
+          if (!trimmed || trimmed.charAt(0) !== '{') {
+            return '';
+          }
+
+          const data = JSON.parse(trimmed);
           const lines = (data.events || [])
             .filter(function (e) {
               return e.segs;
@@ -545,240 +471,82 @@
             .map(function (e) {
               return e.segs
                 .map(function (s) {
-                  return s.utf8 || '';
+                  return (s.utf8 || '').replace(/\n/g, ' ');
                 })
-                .join('');
-            })
-            .map(function (l) {
-              return l.trim();
+                .join('')
+                .replace(/\s+/g, ' ')
+                .trim();
             })
             .filter(Boolean);
 
-          const unique = [];
-          const seen = new Set();
-          for (let i = 0; i < lines.length; i++) {
-            if (!seen.has(lines[i])) {
-              seen.add(lines[i]);
-              unique.push(lines[i]);
+          const uniqueLines = deduplicateLines(lines);
+          return buildParagraphs(uniqueLines);
+        } catch {
+          return '';
+        }
+      }
+
+      async function fetchTimedTextBody(apiUrl, mode) {
+        const requestUrl = mode.wrap(apiUrl);
+        const response = await fetchWithTimeout(requestUrl, {}, FETCH_TIMEOUT_MS);
+
+        if (!response.ok) {
+          return '';
+        }
+
+        const raw = await response.text();
+        const body = mode.parse(raw);
+        return body.trim();
+      }
+
+      async function fetchCaptionForTrack(videoId, track) {
+        const apiUrl = buildTimedTextUrl(videoId, track);
+
+        for (let m = 0; m < FETCH_MODES.length; m++) {
+          const mode = FETCH_MODES[m];
+          try {
+            const body = await fetchTimedTextBody(apiUrl, mode);
+            if (!body) continue;
+
+            const text = parseJson3Captions(body);
+            if (text) {
+              return {
+                language: track.id,
+                sourceType: track.auto ? 'auto-caption' : 'subtitle',
+                text: text,
+              };
             }
-          }
-          return unique.join('\n').trim();
-        } catch {
-          return '';
-        }
-      }
-
-      async function downloadCaptionBody(url) {
-        try {
-          const response = await fetchWithTimeout(proxyUrl(url), {}, FETCH_TIMEOUT_MS);
-          if (!response.ok) return '';
-
-          const body = await response.text();
-          if (!body.trim()) return '';
-
-          if (body.trimStart().startsWith('{')) {
-            return parseJson3Captions(body);
-          }
-
-          return subtitleFileToPlainText(body);
-        } catch {
-          return '';
-        }
-      }
-
-      async function downloadCaptionTrackUrl(baseUrl) {
-        const formats = [
-          baseUrl.indexOf('fmt=') !== -1 ? baseUrl : baseUrl + (baseUrl.indexOf('?') !== -1 ? '&' : '?') + 'fmt=vtt',
-          baseUrl + (baseUrl.indexOf('?') !== -1 ? '&' : '?') + 'fmt=json3',
-        ];
-
-        for (let i = 0; i < formats.length; i++) {
-          const text = await downloadCaptionBody(formats[i]);
-          if (text) return text;
-        }
-        return '';
-      }
-
-      async function downloadBestCaptionTrack(tracks) {
-        const ordered = orderCaptionTracks(tracks).slice(0, MAX_TRACK_ATTEMPTS);
-
-        for (let i = 0; i < ordered.length; i++) {
-          const track = ordered[i];
-          const text = await downloadCaptionTrackUrl(track.baseUrl);
-          if (text) {
-            return {
-              language: track.languageCode,
-              sourceType: track.kind === 'asr' ? 'auto-caption' : 'subtitle',
-              text: text,
-            };
+          } catch {
+            /* tenta próximo modo */
           }
         }
+
         return null;
       }
 
-      async function loadCaptionTracksFromPage(pageUrl) {
-        try {
-          const response = await fetchWithTimeout(proxyUrl(pageUrl), {}, FETCH_TIMEOUT_MS);
-          if (!response.ok) return [];
+      async function fetchCaptionsFromTimedText(videoId, onProgress) {
+        for (let t = 0; t < CAPTION_TRACKS.length; t++) {
+          const track = CAPTION_TRACKS[t];
+          if (onProgress) {
+            onProgress(track.id);
+          }
 
-          const html = await response.text();
-          const player = extractYtInitialPlayerResponse(html);
-          if (!player) return [];
-
-          return player.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-        } catch {
-          return [];
+          const result = await fetchCaptionForTrack(videoId, track);
+          if (result) {
+            return result;
+          }
         }
-      }
 
-      async function fetchCaptionsFromWatchPage(videoId) {
-        const pageUrls = [
-          'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId) + '&hl=pt',
-          'https://www.youtube.com/embed/' + encodeURIComponent(videoId),
-        ];
-
-        for (let i = 0; i < pageUrls.length; i++) {
-          const tracks = await loadCaptionTracksFromPage(pageUrls[i]);
-          const result = await downloadBestCaptionTrack(tracks);
-          if (result) return result;
-        }
         return null;
       }
 
-      function readXmlAttr(attrString, name) {
-        const match = attrString.match(new RegExp(name + '="([^"]*)"', 'i'));
-        return match ? match[1] : '';
-      }
-
-      function parseTrackList(xml) {
-        const tracks = [];
-        const trackRegex = /<track\b([^>]+)\/?>/gi;
-        let match;
-        while ((match = trackRegex.exec(xml)) !== null) {
-          const attrs = match[1];
-          const lang = readXmlAttr(attrs, 'lang_code') || readXmlAttr(attrs, 'lang_code_original');
-          if (!lang) continue;
-          tracks.push({
-            lang: lang,
-            kind: readXmlAttr(attrs, 'kind') || '',
-            name: readXmlAttr(attrs, 'name') || '',
-          });
-        }
-        return tracks;
-      }
-
-      function orderTimedTextTracks(tracks) {
-        const unique = [];
-        const seen = new Set();
-
-        for (let p = 0; p < PREFERRED_LANGS.length; p++) {
-          const preferred = PREFERRED_LANGS[p];
-          for (let i = 0; i < tracks.length; i++) {
-            const track = tracks[i];
-            const key = track.lang + ':' + track.kind;
-            if (seen.has(key)) continue;
-            if (track.lang === preferred || track.lang.indexOf(preferred + '-') === 0) {
-              unique.push(track);
-              seen.add(key);
-            }
-          }
-        }
-
-        for (let i = 0; i < tracks.length; i++) {
-          const track = tracks[i];
-          const key = track.lang + ':' + track.kind;
-          if (!seen.has(key)) {
-            unique.push(track);
-            seen.add(key);
-          }
-        }
-
-        return unique.sort(function (left, right) {
-          const leftAsr = left.kind === 'asr' ? 1 : 0;
-          const rightAsr = right.kind === 'asr' ? 1 : 0;
-          return leftAsr - rightAsr;
-        });
-      }
-
-      function buildFallbackTracks() {
-        const out = [];
-        for (let i = 0; i < PREFERRED_LANGS.length; i++) {
-          const lang = PREFERRED_LANGS[i];
-          out.push({ lang: lang, kind: '', name: '' });
-          out.push({ lang: lang, kind: 'asr', name: '' });
-        }
-        return out;
-      }
-
-      async function listTimedTextTracks(videoId) {
-        const url =
-          'https://www.youtube.com/api/timedtext?v=' + encodeURIComponent(videoId) + '&type=list';
-
-        try {
-          const response = await fetchWithTimeout(proxyUrl(url), {}, FETCH_TIMEOUT_MS);
-          if (!response.ok) return [];
-          return parseTrackList(await response.text());
-        } catch {
-          return [];
-        }
-      }
-
-      async function downloadTimedTextTrack(videoId, track) {
-        const params = new URLSearchParams({
-          v: videoId,
-          lang: track.lang,
-          fmt: 'vtt',
-        });
-        if (track.kind === 'asr') params.set('kind', 'asr');
-        if (track.name) params.set('name', track.name);
-
-        const url = 'https://www.youtube.com/api/timedtext?' + params.toString();
-
-        try {
-          const response = await fetchWithTimeout(proxyUrl(url), {}, FETCH_TIMEOUT_MS);
-          if (!response.ok) return '';
-          const vtt = await response.text();
-          if (!vtt.trim()) return '';
-          return subtitleFileToPlainText(vtt);
-        } catch {
-          return '';
-        }
-      }
-
-      async function fetchCaptionsFromTimedText(videoId) {
-        let tracks = await listTimedTextTracks(videoId);
-        if (tracks.length === 0) tracks = buildFallbackTracks();
-
-        const ordered = orderTimedTextTracks(tracks).slice(0, MAX_TRACK_ATTEMPTS);
-
-        for (let i = 0; i < ordered.length; i++) {
-          const track = ordered[i];
-          const text = await downloadTimedTextTrack(videoId, track);
-          if (text) {
-            return {
-              language: track.lang,
-              sourceType: track.kind === 'asr' ? 'auto-caption' : 'subtitle',
-              text: text,
-            };
-          }
-        }
-        return null;
-      }
-
-      async function transcribeYouTubeUrl(input) {
+      async function transcribeYouTubeUrl(input, onProgress) {
         const videoId = extractVideoId(input);
         if (!videoId) {
           throw new Error('URL inválida. Cole um link do YouTube (watch, shorts ou youtu.be).');
         }
 
-        setStatus('Buscando legendas na página do vídeo…', 'loading');
-
-        let result = await fetchCaptionsFromWatchPage(videoId);
-
-        if (!result) {
-          setStatus('Tentando API de legendas do YouTube…', 'loading');
-          result = await fetchCaptionsFromTimedText(videoId);
-        }
+        const result = await fetchCaptionsFromTimedText(videoId, onProgress);
 
         if (!result || !result.text.trim()) {
           throw new Error(
@@ -808,10 +576,12 @@
         }
 
         setBusy(true);
-        setStatus('Processando…', 'loading');
+        setStatus('Buscando legendas…', 'loading');
 
         try {
-          const result = await transcribeYouTubeUrl(url);
+          const result = await transcribeYouTubeUrl(url, function (trackId) {
+            setStatus('Buscando legendas (' + trackId + ')…', 'loading');
+          });
           outputEl.value = result.text;
           outputSection.hidden = false;
 
