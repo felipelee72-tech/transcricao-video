@@ -206,22 +206,43 @@
       letter-spacing: 0.06em;
     }
 
-    textarea {
+    .script-output {
       width: 100%;
       min-height: 280px;
+      max-height: min(60vh, 520px);
+      overflow-y: auto;
       padding: 1rem;
       border: 1px solid var(--surface-2);
       border-radius: 10px;
       background: var(--bg);
       color: var(--text);
       font-size: 1rem;
-      line-height: 1.6;
-      resize: vertical;
+      line-height: 1.65;
     }
 
-    textarea:focus {
+    .script-output:focus {
       outline: 2px solid var(--accent);
       outline-offset: 1px;
+    }
+
+    .script-turn {
+      margin: 0;
+    }
+
+    .script-turn + .script-separator,
+    .script-separator + .script-turn {
+      margin-top: 0;
+    }
+
+    .script-separator {
+      text-align: center;
+      color: var(--muted);
+      opacity: 0.5;
+      font-size: 0.65rem;
+      line-height: 1;
+      margin: 0.35rem 0;
+      user-select: none;
+      pointer-events: none;
     }
 
     .option-row {
@@ -270,7 +291,7 @@
         </div>
         <label class="option-row" for="splitSpeakers">
           <input type="checkbox" id="splitSpeakers" checked />
-          <span>Separar blocos de fala quando a legenda usar <strong>&gt;&gt;</strong> (não identifica nomes automaticamente)</span>
+          <span>Marcar troca de fala com <strong>&gt;&gt;</strong> (separador · entre blocos)</span>
         </label>
       </form>
 
@@ -281,7 +302,7 @@
           <span>Transcrição</span>
           <span id="metaLang"></span>
         </div>
-        <textarea id="output" readonly placeholder="O texto aparecerá aqui…"></textarea>
+        <div id="output" class="script-output" tabindex="0" aria-label="Transcrição"></div>
         <button type="button" class="btn-secondary" id="btnCopy">Copiar tudo</button>
       </section>
     </main>
@@ -338,10 +359,13 @@
         },
       ];
 
+      const SPEAKER_BREAK = '\n·\n';
+
       const form = document.getElementById('form');
       const urlInput = document.getElementById('url');
       const splitSpeakersInput = document.getElementById('splitSpeakers');
       const btnTranscribe = document.getElementById('btnTranscribe');
+      let lastOutputPlainText = '';
       const btnCopy = document.getElementById('btnCopy');
       const statusEl = document.getElementById('status');
       const outputSection = document.getElementById('outputSection');
@@ -591,18 +615,28 @@
         });
       }
 
-      function formatSpeakerTurns(turns) {
-        const sections = [];
-
-        for (let i = 0; i < turns.length; i++) {
-          const body = buildParagraphs(turns[i]);
-          if (!body) {
-            continue;
-          }
-          sections.push('Falante ' + (i + 1) + '\n' + body);
+      function mergeTurnToScriptBlock(lines) {
+        const unique = deduplicateRollingCaptions(lines);
+        if (!unique.length) {
+          return '';
         }
 
-        return sections.join('\n\n').trim();
+        let text = unique.join(' ');
+        text = collapseInlineRepeats(text);
+        return text.replace(/\s+/g, ' ').trim();
+      }
+
+      function formatSpeakerTurns(turns) {
+        const blocks = [];
+
+        for (let i = 0; i < turns.length; i++) {
+          const block = mergeTurnToScriptBlock(turns[i]);
+          if (block) {
+            blocks.push(block);
+          }
+        }
+
+        return blocks.join(SPEAKER_BREAK);
       }
 
       function formatTranscriptFromCues(cueLines, splitSpeakers) {
@@ -613,7 +647,41 @@
           }
         }
 
-        return buildParagraphs(deduplicateRollingCaptions(cueLines));
+        return mergeTurnToScriptBlock(cueLines);
+      }
+
+      function renderScriptOutput(text) {
+        lastOutputPlainText = String(text || '').trim();
+        outputEl.innerHTML = '';
+
+        if (!lastOutputPlainText) {
+          return;
+        }
+
+        const parts = lastOutputPlainText.split(SPEAKER_BREAK);
+
+        if (parts.length <= 1) {
+          const paragraph = document.createElement('p');
+          paragraph.className = 'script-turn';
+          paragraph.textContent = lastOutputPlainText;
+          outputEl.appendChild(paragraph);
+          return;
+        }
+
+        for (let i = 0; i < parts.length; i++) {
+          if (i > 0) {
+            const separator = document.createElement('div');
+            separator.className = 'script-separator';
+            separator.setAttribute('aria-hidden', 'true');
+            separator.textContent = '·';
+            outputEl.appendChild(separator);
+          }
+
+          const paragraph = document.createElement('p');
+          paragraph.className = 'script-turn';
+          paragraph.textContent = parts[i].trim();
+          outputEl.appendChild(paragraph);
+        }
       }
 
       function parseTranscriptTxt(raw, options) {
@@ -856,7 +924,7 @@
             .filter(Boolean);
 
           const uniqueLines = deduplicateLines(lines);
-          return buildParagraphs(uniqueLines);
+          return mergeTurnToScriptBlock(uniqueLines);
         } catch {
           return '';
         }
@@ -959,7 +1027,7 @@
       form.addEventListener('submit', async function (e) {
         e.preventDefault();
         outputSection.hidden = true;
-        outputEl.value = '';
+        renderScriptOutput('');
         metaLang.textContent = '';
 
         const url = urlInput.value.trim();
@@ -975,7 +1043,7 @@
           const result = await transcribeYouTubeUrl(url, function (trackId) {
             setStatus('Buscando legendas (' + trackId + ')…', 'loading');
           });
-          outputEl.value = result.text;
+          renderScriptOutput(result.text);
           outputSection.hidden = false;
 
           const langLabel = result.language ? result.language.toUpperCase() : '';
@@ -1000,7 +1068,7 @@
       });
 
       btnCopy.addEventListener('click', async function () {
-        const text = outputEl.value.trim();
+        const text = lastOutputPlainText;
         if (!text) {
           setStatus('Nada para copiar.', 'error');
           return;
@@ -1010,9 +1078,13 @@
           await navigator.clipboard.writeText(text);
           setStatus('Copiado para a área de transferência.', 'ok');
         } catch {
-          outputEl.select();
-          outputEl.setSelectionRange(0, text.length);
+          const range = document.createRange();
+          range.selectNodeContents(outputEl);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
           const ok = document.execCommand('copy');
+          selection.removeAllRanges();
           setStatus(
             ok ? 'Copiado para a área de transferência.' : 'Não foi possível copiar. Selecione o texto manualmente.',
             ok ? 'ok' : 'error'
