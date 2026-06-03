@@ -411,6 +411,62 @@
           .trim();
       }
 
+      function normalizeRawCueLine(line) {
+        return decodeHtmlEntities(line).replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+      }
+
+      function lineComparisonKey(line) {
+        return normalizeForComparison(collapseInlineRepeats(cleanCueLine(line)));
+      }
+
+      function isPrefixOfLine(shorterKey, longerKey) {
+        if (!shorterKey || !longerKey) {
+          return false;
+        }
+
+        if (shorterKey === longerKey) {
+          return true;
+        }
+
+        return longerKey.startsWith(shorterKey);
+      }
+
+      function removePrefixDuplicateLines(lines) {
+        let current = lines.filter(function (line) {
+          return lineComparisonKey(line).length > 0;
+        });
+
+        if (current.length <= 1) {
+          return current;
+        }
+
+        let changed = true;
+
+        while (changed) {
+          changed = false;
+          const next = [];
+
+          for (let i = 0; i < current.length; i++) {
+            const key = lineComparisonKey(current[i]);
+
+            if (i + 1 < current.length) {
+              const nextKey = lineComparisonKey(current[i + 1]);
+
+              if (isPrefixOfLine(key, nextKey)) {
+                changed = true;
+                continue;
+              }
+            }
+
+            next.push(current[i]);
+          }
+
+          current = next;
+        }
+
+        return current;
+      }
+
       function extractTranscriptCueLines(body) {
         const lines = [];
         const timestampRe = /\[(\d{1,2}:)?\d{1,2}:\d{2}(?::\d{2})?\]\s*/g;
@@ -426,9 +482,9 @@
             const chunkStart = markers[i].end;
             const chunkEnd = i + 1 < markers.length ? markers[i + 1].start : body.length;
             const chunk = body.slice(chunkStart, chunkEnd).replace(/\n+/g, ' ').trim();
-            const cleaned = cleanCueLine(chunk);
-            if (cleaned) {
-              lines.push(cleaned);
+            const raw = normalizeRawCueLine(chunk);
+            if (raw) {
+              lines.push(raw);
             }
           }
           return lines;
@@ -437,15 +493,8 @@
         return body
           .split(/\n+/)
           .map(function (row) {
-            return cleanCueLine(row.replace(/^\[[\d:]+\]\s*/, ''));
+            return normalizeRawCueLine(row.replace(/^\[[\d:]+\]\s*/, ''));
           })
-          .filter(Boolean);
-      }
-
-      function splitSpeakerSegments(text) {
-        return String(text || '')
-          .split(/\s*(?:>>|››|»»)\s*/g)
-          .map(cleanCueLine)
           .filter(Boolean);
       }
 
@@ -466,75 +515,6 @@
         }
 
         return result.trim();
-      }
-
-      function expandCueLines(lines) {
-        const expanded = [];
-
-        for (let i = 0; i < lines.length; i++) {
-          const cleaned = cleanCueLine(lines[i]);
-          if (!cleaned) {
-            continue;
-          }
-
-          const segments = splitSpeakerSegments(cleaned);
-          if (segments.length > 1) {
-            for (let j = 0; j < segments.length; j++) {
-              const segment = collapseInlineRepeats(segments[j]);
-              if (segment) {
-                expanded.push(segment);
-              }
-            }
-          } else {
-            const segment = collapseInlineRepeats(cleaned);
-            if (segment) {
-              expanded.push(segment);
-            }
-          }
-        }
-
-        return expanded;
-      }
-
-      function deduplicateRollingCaptions(lines) {
-        const uniqueLines = [];
-        const seenExact = new Set();
-        const expanded = expandCueLines(lines);
-
-        for (let i = 0; i < expanded.length; i++) {
-          const cleaned = expanded[i];
-          const key = normalizeForComparison(cleaned);
-          if (!key) {
-            continue;
-          }
-
-          if (uniqueLines.length > 0) {
-            const lastIndex = uniqueLines.length - 1;
-            const lastKey = normalizeForComparison(uniqueLines[lastIndex]);
-
-            if (key === lastKey) {
-              continue;
-            }
-
-            if (key.startsWith(lastKey) || lastKey.startsWith(key)) {
-              if (key.length >= lastKey.length) {
-                seenExact.delete(lastKey);
-                uniqueLines[lastIndex] = cleaned;
-                seenExact.add(key);
-              }
-              continue;
-            }
-          }
-
-          if (seenExact.has(key)) {
-            continue;
-          }
-
-          uniqueLines.push(cleaned);
-          seenExact.add(key);
-        }
-
-        return uniqueLines;
       }
 
       function cueIndicatesNewSpeaker(rawChunk) {
@@ -616,14 +596,19 @@
       }
 
       function mergeTurnToScriptBlock(lines) {
-        const unique = deduplicateRollingCaptions(lines);
-        if (!unique.length) {
+        const deduped = removePrefixDuplicateLines(lines);
+        if (!deduped.length) {
           return '';
         }
 
-        let text = unique.join(' ');
-        text = collapseInlineRepeats(text);
-        return text.replace(/\s+/g, ' ').trim();
+        return deduped
+          .map(function (line) {
+            return collapseInlineRepeats(cleanCueLine(line));
+          })
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
       }
 
       function formatSpeakerTurns(turns) {
@@ -640,14 +625,16 @@
       }
 
       function formatTranscriptFromCues(cueLines, splitSpeakers) {
+        const cleanedCues = removePrefixDuplicateLines(cueLines);
+
         if (splitSpeakers) {
-          const turns = processSpeakerTurns(cueLines);
+          const turns = processSpeakerTurns(cleanedCues);
           if (turns.length > 1) {
             return formatSpeakerTurns(turns);
           }
         }
 
-        return mergeTurnToScriptBlock(cueLines);
+        return mergeTurnToScriptBlock(cleanedCues);
       }
 
       function renderScriptOutput(text) {
@@ -851,54 +838,6 @@
           .trim();
       }
 
-      function deduplicateLines(lines) {
-        return deduplicateRollingCaptions(
-          lines.map(function (line) {
-            return cleanCueLine(line);
-          }),
-        );
-      }
-
-      function endsWithSentencePunctuation(text) {
-        return /[.!?…][\s"')\]]*$/u.test(text.trim());
-      }
-
-      function buildParagraphs(lines) {
-        if (lines.length === 0) return '';
-
-        const sentences = [];
-        for (let i = 0; i < lines.length; i++) {
-          const parts = lines[i].split(/(?<=[.!?…])\s+/u).filter(Boolean);
-          if (parts.length > 1) {
-            for (let j = 0; j < parts.length; j++) {
-              sentences.push(parts[j].trim());
-            }
-          } else {
-            sentences.push(lines[i]);
-          }
-        }
-
-        const paragraphs = [];
-        let block = [];
-
-        function flushBlock() {
-          if (block.length === 0) return;
-          paragraphs.push(block.join(' '));
-          block = [];
-        }
-
-        for (let i = 0; i < sentences.length; i++) {
-          const sentence = sentences[i];
-          block.push(sentence);
-          const reachedMax = block.length >= 5;
-          const reachedMin = block.length >= 3 && endsWithSentencePunctuation(sentence);
-          if (reachedMax || reachedMin) flushBlock();
-        }
-
-        flushBlock();
-        return paragraphs.join('\n\n').trim();
-      }
-
       function parseJson3Captions(raw) {
         try {
           const trimmed = String(raw || '').trim();
@@ -923,8 +862,7 @@
             })
             .filter(Boolean);
 
-          const uniqueLines = deduplicateLines(lines);
-          return mergeTurnToScriptBlock(uniqueLines);
+          return formatTranscriptFromCues(lines, splitSpeakersInput.checked);
         } catch {
           return '';
         }
