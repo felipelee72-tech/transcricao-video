@@ -1,4 +1,8 @@
 import { subtitleFileToPlainText } from './subtitleParser.js';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout.js';
+
+const FETCH_TIMEOUT_MS = 12_000;
+const MAX_TRACK_ATTEMPTS = 6;
 
 const PREFERRED_LANGS = ['pt', 'pt-BR', 'pt-PT', 'por', 'en', 'en-US', 'es'];
 
@@ -12,13 +16,20 @@ const BROWSER_HEADERS = {
  * Fallback sem yt-dlp: API publica de legendas do YouTube (timedtext).
  * Funciona em muitos casos quando datacenter IP bloqueia o yt-dlp.
  */
+function buildFallbackTracks() {
+  return PREFERRED_LANGS.flatMap((lang) => [
+    { lang, kind: '', name: '' },
+    { lang, kind: 'asr', name: '' },
+  ]);
+}
+
 export async function fetchYouTubeTimedTextCaptions(videoId) {
-  const tracks = await listTimedTextTracks(videoId);
+  let tracks = await listTimedTextTracks(videoId);
   if (tracks.length === 0) {
-    return null;
+    tracks = buildFallbackTracks();
   }
 
-  const ordered = orderTracks(tracks);
+  const ordered = orderTracks(tracks).slice(0, MAX_TRACK_ATTEMPTS);
 
   for (const track of ordered) {
     const text = await downloadTimedTextTrack(videoId, track);
@@ -38,7 +49,7 @@ async function listTimedTextTracks(videoId) {
   const url = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
 
   try {
-    const response = await fetch(url, { headers: BROWSER_HEADERS });
+    const response = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, FETCH_TIMEOUT_MS);
     if (!response.ok) {
       return [];
     }
@@ -69,15 +80,7 @@ function parseTrackList(xml) {
     });
   }
 
-  if (tracks.length > 0) {
-    return tracks;
-  }
-
-  // fallback: tentar idiomas preferidos mesmo sem list
-  return PREFERRED_LANGS.flatMap((lang) => [
-    { lang, kind: '', name: 'manual' },
-    { lang, kind: 'asr', name: 'auto' },
-  ]);
+  return tracks;
 }
 
 function readXmlAttr(attrString, name) {
@@ -137,7 +140,7 @@ async function downloadTimedTextTrack(videoId, track) {
   const url = `https://www.youtube.com/api/timedtext?${params.toString()}`;
 
   try {
-    const response = await fetch(url, { headers: BROWSER_HEADERS });
+    const response = await fetchWithTimeout(url, { headers: BROWSER_HEADERS }, FETCH_TIMEOUT_MS);
     if (!response.ok) {
       return '';
     }

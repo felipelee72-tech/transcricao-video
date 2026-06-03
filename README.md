@@ -271,9 +271,12 @@ Resposta esperada:
 
 O app tenta automaticamente:
 
-1. Varias URLs do mesmo video (`watch?v=`, `youtu.be/`)
-2. Varios clientes yt-dlp (`android_vr`, `ios`, `tv_embedded`, etc.)
-3. API de legendas `timedtext` (sem yt-dlp)
+1. Legendas pela pagina do video e API `timedtext` (sem yt-dlp)
+2. Titulo e descricao do video (quando legendas nao baixam no servidor)
+3. Varias URLs do mesmo video (`watch?v=`, `youtu.be/`) via yt-dlp
+4. Clientes yt-dlp (`android_vr`, `ios`, cookies se configurados)
+
+No Render **sem cookies**, o yt-dlp costuma ser bloqueado; o app prioriza os passos 1–2. Para legendas completas, configure cookies.
 
 Se ainda falhar, configure no Render a variavel **`YT_DLP_COOKIES_CONTENT`**:
 

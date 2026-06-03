@@ -233,7 +233,27 @@ async function processFreeLinkJob(job, jobDir) {
       platform: link.platform,
     });
 
-    const extraction = await extractLinkText(job.url, jobDir);
+    const progressTicker = setInterval(() => {
+      if (job.status !== 'processing') {
+        return;
+      }
+
+      const nextProgress = Math.min(92, Math.max(job.progress, 55) + 4);
+      updateJob(job, {
+        progress: nextProgress,
+        message:
+          nextProgress >= 80
+            ? 'Finalizando extracao de legendas ou metadados...'
+            : 'Ainda extraindo... isso pode levar ate 1 minuto.',
+      });
+    }, 4_000);
+
+    let extraction;
+    try {
+      extraction = await runExtractionWithDeadline(job.url, jobDir, 85_000);
+    } finally {
+      clearInterval(progressTicker);
+    }
 
     if (extraction.log?.subtitleLanguage) {
       console.log(`[jobs] legenda escolhida: ${job.id}`, {
@@ -382,6 +402,31 @@ async function processOpenAiJob(job, jobDir) {
       errorDetails,
     });
     await cleanupJobDir(job);
+  }
+}
+
+async function runExtractionWithDeadline(url, jobDir, timeoutMs) {
+  let timer;
+
+  const timeoutResult = new Promise((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve({
+          success: false,
+          platform: '',
+          sourceType: 'none',
+          text: '',
+          message:
+            'A extracao demorou demais e foi interrompida. Tente outro link ou aguarde alguns minutos e tente de novo.',
+        }),
+      timeoutMs,
+    );
+  });
+
+  try {
+    return await Promise.race([extractLinkText(url, jobDir), timeoutResult]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

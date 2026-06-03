@@ -82,13 +82,15 @@ export function getYouTubeUrlVariants(inputUrl) {
     }
   };
 
-  add(trimmed);
-
   try {
     const videoId = extractYouTubeVideoId(trimmed);
     add(`https://www.youtube.com/watch?v=${videoId}`);
+    if (trimmed !== `https://www.youtube.com/watch?v=${videoId}`) {
+      add(trimmed);
+    }
     add(`https://youtu.be/${videoId}`);
   } catch {
+    add(trimmed);
     try {
       add(normalizeYouTubeUrl(trimmed));
     } catch {

@@ -136,7 +136,20 @@ function App() {
         const response = await fetch(apiUrl(`/api/transcriptions/${job.id}/status`));
         const data = await readJsonResponse(response, 'Nao foi possivel consultar o status.');
 
-        setJob((currentJob) => ({ ...currentJob, ...data }));
+        setJob((currentJob) => {
+          const merged = { ...currentJob, ...data };
+
+          if (data.status === 'failed') {
+            const userMessage = resolveJobUserMessage(merged);
+            return {
+              ...merged,
+              message: userMessage,
+              error: userMessage,
+            };
+          }
+
+          return merged;
+        });
 
         if (data.status === 'completed') {
           const resultResponse = await fetch(apiUrl(`/api/transcriptions/${job.id}`));
@@ -148,6 +161,7 @@ function App() {
             platform: resultData.platform ?? currentJob.platform,
             sourceType: resultData.sourceType ?? currentJob.sourceType,
             success: resultData.success ?? true,
+            code: resultData.code ?? currentJob.code,
             message: resultData.message ?? currentJob.message,
           }));
         }
@@ -163,9 +177,10 @@ function App() {
     };
 
     pollStatus();
-    const intervalId = window.setInterval(pollStatus, 3000);
+    const pollMs = job.status === 'processing' ? 1500 : 3000;
+    const intervalId = window.setInterval(pollStatus, pollMs);
     return () => window.clearInterval(intervalId);
-  }, [isPolling, job.id]);
+  }, [isPolling, job.id, job.status]);
 
   useEffect(() => {
     if (isFreeMode || job.status !== 'awaiting_transcription' || !job.id || !job.chunkCount) {

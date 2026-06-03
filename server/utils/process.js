@@ -48,7 +48,7 @@ export function summarizeProcessOutput(text, maxLength = 400) {
 
 export function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const { logPrefix, strategy, quiet = false, ...spawnOptions } = options;
+    const { logPrefix, strategy, quiet = false, timeoutMs = 35_000, ...spawnOptions } = options;
     const commandLine = formatCommand(command, args);
     const prefix = logPrefix ? `[${logPrefix}]` : `[${command}]`;
 
@@ -71,6 +71,29 @@ export function runCommand(command, args, options = {}) {
 
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let settled = false;
+
+    const settle = (handler) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+
+      handler();
+    };
+
+    const killTimer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill();
+          }, timeoutMs)
+        : null;
 
     child.stdout?.on('data', (data) => {
       stdout += data.toString();
@@ -81,73 +104,90 @@ export function runCommand(command, args, options = {}) {
     });
 
     child.on('error', (error) => {
-      if (quiet) {
-        logCommandFailureQuiet(prefix, {
-          strategy,
-          exitCode: error.errno ?? null,
-          stderr,
-          stdout,
-        });
-      } else {
-        logCommandFailure(prefix, {
-          command: commandLine,
-          strategy,
-          exitCode: error.errno ?? null,
-          stdout,
-          stderr,
-          error,
-        });
-      }
+      settle(() => {
+        if (quiet) {
+          logCommandFailureQuiet(prefix, {
+            strategy,
+            exitCode: error.errno ?? null,
+            stderr,
+            stdout,
+          });
+        } else {
+          logCommandFailure(prefix, {
+            command: commandLine,
+            strategy,
+            exitCode: error.errno ?? null,
+            stdout,
+            stderr,
+            error,
+          });
+        }
 
-      reject(
-        new CommandExecutionError(buildFriendlyCommandError(command, strategy, stderr, stdout, error.message), {
-          stdout,
-          stderr,
-          exitCode: error.errno ?? null,
-          command: commandLine,
-          strategy,
-        }),
-      );
+        reject(
+          new CommandExecutionError(buildFriendlyCommandError(command, strategy, stderr, stdout, error.message), {
+            stdout,
+            stderr,
+            exitCode: error.errno ?? null,
+            command: commandLine,
+            strategy,
+          }),
+        );
+      });
     });
 
     child.on('close', (code) => {
-      if (!quiet) {
-        console.log(`${prefix} evento close. codigo de saida: ${code}`);
-        console.log(`${prefix} stdout completo:\n${stdout || '(vazio)'}`);
-        console.error(`${prefix} stderr completo:\n${stderr || '(vazio)'}`);
-      }
+      settle(() => {
+        if (!quiet) {
+          console.log(`${prefix} evento close. codigo de saida: ${code}`);
+          console.log(`${prefix} stdout completo:\n${stdout || '(vazio)'}`);
+          console.error(`${prefix} stderr completo:\n${stderr || '(vazio)'}`);
+        }
 
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
-      }
+        if (timedOut) {
+          reject(
+            new CommandExecutionError(`Tempo esgotado ao executar ${command}${strategy ? ` (${strategy})` : ''}.`, {
+              stdout,
+              stderr,
+              exitCode: code,
+              command: commandLine,
+              strategy,
+            }),
+          );
+          return;
+        }
 
-      if (quiet) {
-        logCommandFailureQuiet(prefix, {
-          strategy,
-          exitCode: code,
-          stderr,
-          stdout,
-        });
-      } else {
-        logCommandFailure(prefix, {
-          command: commandLine,
-          strategy,
-          exitCode: code,
-          stdout,
-          stderr,
-        });
-      }
+        if (code === 0) {
+          resolve({ stdout, stderr });
+          return;
+        }
 
-      reject(
-        new CommandExecutionError(buildFriendlyCommandError(command, strategy, stderr, stdout), {
-          stdout,
-          stderr,
-          exitCode: code,
-          command: commandLine,
-          strategy,
-        }),
-      );
+        if (quiet) {
+          logCommandFailureQuiet(prefix, {
+            strategy,
+            exitCode: code,
+            stderr,
+            stdout,
+          });
+        } else {
+          logCommandFailure(prefix, {
+            command: commandLine,
+            strategy,
+            exitCode: code,
+            stdout,
+            stderr,
+          });
+        }
+
+        reject(
+          new CommandExecutionError(buildFriendlyCommandError(command, strategy, stderr, stdout), {
+            stdout,
+            stderr,
+            exitCode: code,
+            command: commandLine,
+            strategy,
+          }),
+        );
+      });
     });
   });
 }

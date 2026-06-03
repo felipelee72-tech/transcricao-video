@@ -1,5 +1,7 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: path.resolve(process.cwd(), '..', '.env') });
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+dotenv.config({ path: path.join(projectRoot, '.env') });

@@ -19,8 +19,8 @@ test('variantes de URL do YouTube', () => {
   );
 
   assert.deepEqual(variants, [
-    'https://www.youtube.com/watch?v=abc123&t=10&list=PLxxx',
     'https://www.youtube.com/watch?v=abc123',
+    'https://www.youtube.com/watch?v=abc123&t=10&list=PLxxx',
     'https://youtu.be/abc123',
   ]);
 });
