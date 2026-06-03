@@ -224,6 +224,22 @@
       outline-offset: 1px;
     }
 
+    .option-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      margin-top: 0.85rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      line-height: 1.4;
+      cursor: pointer;
+    }
+
+    .option-row input {
+      margin-top: 0.2rem;
+      accent-color: var(--accent);
+    }
+
     footer {
       margin-top: 2rem;
       text-align: center;
@@ -252,6 +268,10 @@
           />
           <button type="submit" class="btn-primary" id="btnTranscribe">Transcrever</button>
         </div>
+        <label class="option-row" for="splitSpeakers">
+          <input type="checkbox" id="splitSpeakers" checked />
+          <span>Separar blocos de fala quando a legenda usar <strong>&gt;&gt;</strong> (não identifica nomes automaticamente)</span>
+        </label>
       </form>
 
       <div id="status" class="status" role="status" aria-live="polite"></div>
@@ -320,6 +340,7 @@
 
       const form = document.getElementById('form');
       const urlInput = document.getElementById('url');
+      const splitSpeakersInput = document.getElementById('splitSpeakers');
       const btnTranscribe = document.getElementById('btnTranscribe');
       const btnCopy = document.getElementById('btnCopy');
       const statusEl = document.getElementById('status');
@@ -492,17 +513,120 @@
         return uniqueLines;
       }
 
-      function parseTranscriptTxt(raw) {
+      function cueIndicatesNewSpeaker(rawChunk) {
+        return /(?:>>|&gt;&gt;|››|»»)/.test(String(rawChunk || ''));
+      }
+
+      function appendLineToTurn(turnLines, cleaned) {
+        if (!cleaned) {
+          return;
+        }
+
+        const key = normalizeForComparison(cleaned);
+        if (!key) {
+          return;
+        }
+
+        if (turnLines.length > 0) {
+          const lastIndex = turnLines.length - 1;
+          const lastKey = normalizeForComparison(turnLines[lastIndex]);
+
+          if (key === lastKey) {
+            return;
+          }
+
+          if (key.startsWith(lastKey) || lastKey.startsWith(key)) {
+            if (key.length >= lastKey.length) {
+              turnLines[lastIndex] = cleaned;
+            }
+            return;
+          }
+        }
+
+        for (let i = 0; i < turnLines.length; i++) {
+          if (normalizeForComparison(turnLines[i]) === key) {
+            return;
+          }
+        }
+
+        turnLines.push(cleaned);
+      }
+
+      function processSpeakerTurns(cueLines) {
+        const turns = [];
+        let turnIndex = 0;
+
+        function ensureTurn() {
+          if (!turns[turnIndex]) {
+            turns[turnIndex] = [];
+          }
+        }
+
+        for (let c = 0; c < cueLines.length; c++) {
+          const rawChunk = cueLines[c];
+          const decoded = decodeHtmlEntities(rawChunk);
+          const parts = decoded.split(/\s*(?:>>|&gt;&gt;|››|»»)\s*/);
+
+          if (cueIndicatesNewSpeaker(rawChunk) && turns.length > 0) {
+            turnIndex++;
+          }
+
+          for (let p = 0; p < parts.length; p++) {
+            const cleaned = collapseInlineRepeats(parts[p]);
+            if (!cleaned) {
+              continue;
+            }
+
+            if (p > 0) {
+              turnIndex++;
+            }
+
+            ensureTurn();
+            appendLineToTurn(turns[turnIndex], cleaned);
+          }
+        }
+
+        return turns.filter(function (turn) {
+          return turn && turn.length > 0;
+        });
+      }
+
+      function formatSpeakerTurns(turns) {
+        const sections = [];
+
+        for (let i = 0; i < turns.length; i++) {
+          const body = buildParagraphs(turns[i]);
+          if (!body) {
+            continue;
+          }
+          sections.push('Falante ' + (i + 1) + '\n' + body);
+        }
+
+        return sections.join('\n\n').trim();
+      }
+
+      function formatTranscriptFromCues(cueLines, splitSpeakers) {
+        if (splitSpeakers) {
+          const turns = processSpeakerTurns(cueLines);
+          if (turns.length > 1) {
+            return formatSpeakerTurns(turns);
+          }
+        }
+
+        return buildParagraphs(deduplicateRollingCaptions(cueLines));
+      }
+
+      function parseTranscriptTxt(raw, options) {
         const text = String(raw || '');
         if (!text.includes('## Transcript')) {
           return '';
         }
 
+        const splitSpeakers = !options || options.splitSpeakers !== false;
         const body = (text.split('## Transcript')[1] || '').split(/^---$/m)[0];
         const cueLines = extractTranscriptCueLines(body);
-        const uniqueLines = deduplicateRollingCaptions(cueLines);
 
-        return buildParagraphs(uniqueLines);
+        return formatTranscriptFromCues(cueLines, splitSpeakers);
       }
 
       function readTranscriptLanguage(raw) {
@@ -537,7 +661,9 @@
         }
 
         const raw = await response.text();
-        const text = parseTranscriptTxt(raw);
+        const text = parseTranscriptTxt(raw, {
+          splitSpeakers: splitSpeakersInput.checked,
+        });
         if (!text) {
           return null;
         }
@@ -818,6 +944,16 @@
         btnTranscribe.disabled = busy;
         urlInput.disabled = busy;
         btnCopy.disabled = busy;
+      }
+
+      if (splitSpeakersInput) {
+        const savedSplit = localStorage.getItem('splitSpeakers');
+        if (savedSplit === '0') {
+          splitSpeakersInput.checked = false;
+        }
+        splitSpeakersInput.addEventListener('change', function () {
+          localStorage.setItem('splitSpeakers', splitSpeakersInput.checked ? '1' : '0');
+        });
       }
 
       form.addEventListener('submit', async function (e) {
