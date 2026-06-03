@@ -626,10 +626,32 @@
         turnLines.push(cleaned);
       }
 
+      function endsWithSentencePunctuation(text) {
+        return /[.!?…][\s"')\]]*$/u.test(String(text || '').trim());
+      }
+
+      function shouldStartNewSpeakerTurn(lastLine, newLine) {
+        if (!lastLine || !newLine) {
+          return false;
+        }
+
+        if (!endsWithSentencePunctuation(lastLine)) {
+          return false;
+        }
+
+        const lastKey = lineComparisonKey(lastLine);
+        const newKey = lineComparisonKey(newLine);
+
+        if (!lastKey || !newKey) {
+          return false;
+        }
+
+        return !isPrefixOfLine(lastKey, newKey) && !isPrefixOfLine(newKey, lastKey);
+      }
+
       function processSpeakerTurns(cueLines) {
         const turns = [];
         let currentTurn = [];
-        const PAUSE_BREAK_SEC = 1.4;
 
         function flushTurn() {
           if (!currentTurn.length) {
@@ -643,25 +665,16 @@
           const cue = normalizeCueEntry(cueLines[c]);
           const parts = splitInternalSpeakerParts(cue.raw);
 
-          if (c > 0 && currentTurn.length > 0) {
-            const prevCue = normalizeCueEntry(cueLines[c - 1]);
-            const gap =
-              cue.seconds != null &&
-              prevCue.seconds != null &&
-              cue.seconds - prevCue.seconds >= PAUSE_BREAK_SEC;
-
-            if (gap) {
-              flushTurn();
-            }
-          }
-
           for (let p = 0; p < parts.length; p++) {
             const cleaned = collapseInlineRepeats(parts[p]);
             if (!cleaned) {
               continue;
             }
 
-            if (p > 0) {
+            if (
+              currentTurn.length > 0 &&
+              shouldStartNewSpeakerTurn(currentTurn[currentTurn.length - 1], cleaned)
+            ) {
               flushTurn();
             }
 
@@ -692,6 +705,37 @@
           .trim();
       }
 
+      function mergePrefixSpeakerBlocks(blocks) {
+        if (blocks.length <= 1) {
+          return blocks;
+        }
+
+        const merged = [];
+
+        for (let i = 0; i < blocks.length; i++) {
+          const current = blocks[i];
+          const currentKey = normalizeForComparison(current);
+
+          if (merged.length > 0) {
+            const lastIndex = merged.length - 1;
+            const lastKey = normalizeForComparison(merged[lastIndex]);
+
+            if (isPrefixOfLine(lastKey, currentKey)) {
+              merged[lastIndex] = current;
+              continue;
+            }
+
+            if (isPrefixOfLine(currentKey, lastKey)) {
+              continue;
+            }
+          }
+
+          merged.push(current);
+        }
+
+        return merged;
+      }
+
       function formatSpeakerTurns(turns) {
         const blocks = [];
 
@@ -702,11 +746,35 @@
           }
         }
 
-        return blocks.join(SPEAKER_BREAK);
+        return mergePrefixSpeakerBlocks(blocks).join(SPEAKER_BREAK);
+      }
+
+      function expandCueLinesFromRaw(cueLines) {
+        const expanded = [];
+
+        for (let i = 0; i < cueLines.length; i++) {
+          const cue = normalizeCueEntry(cueLines[i]);
+          const parts = splitInternalSpeakerParts(cue.raw);
+
+          for (let p = 0; p < parts.length; p++) {
+            const cleaned = collapseInlineRepeats(parts[p]);
+            if (!cleaned) {
+              continue;
+            }
+
+            expanded.push({
+              seconds: cue.seconds,
+              raw: cleaned,
+            });
+          }
+        }
+
+        return expanded;
       }
 
       function formatTranscriptFromCues(cueLines, splitSpeakers) {
-        const cleanedCues = removePrefixDuplicateLines(cueLines);
+        const expandedCues = expandCueLinesFromRaw(cueLines);
+        const cleanedCues = removePrefixDuplicateLines(expandedCues);
 
         if (splitSpeakers) {
           const turns = processSpeakerTurns(cleanedCues);
