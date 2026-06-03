@@ -21,7 +21,8 @@
     "test:parser": "node --test server/services/subtitleParser.test.mjs",
     "test:bot": "node --test server/services/youtubeBotError.test.mjs",
     "test:e2e": "node scripts/integration-test.mjs",
-    "test": "npm run test:parser && npm run test:bot && npm run test:watch",
+    "test": "npm run test:parser && npm run test:bot && npm run test:watch && npm run test:yt-dlp-version",
+    "test:yt-dlp-version": "node --test server/utils/ytDlpVersion.test.mjs",
     "test:watch": "node --test server/services/youtubeWatchCaptions.test.mjs",
     "firewall:open": "powershell -ExecutionPolicy Bypass -File scripts/open-firewall-port.ps1"
   },

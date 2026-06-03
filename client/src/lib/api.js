@@ -67,5 +67,6 @@ export function getClientDiagnostics() {
     port: window.location.port,
     apiBaseUrl: getApiBaseUrl() || '(relativo — mesmo host da pagina)',
     resolvedApiHealthUrl: apiUrl('/api/health'),
+    resolvedApiDiagnosticsUrl: apiUrl('/api/diagnostics'),
   };
 }

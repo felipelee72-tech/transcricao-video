@@ -18,6 +18,8 @@ services:
         value: "true"
       - key: DEBUG_YTDLP
         value: "false"
+      - key: YT_DLP_PATH
+        value: /opt/render/project/src/.bin/yt-dlp
       - key: APP_PASSWORD
         sync: false
       - key: CLIENT_ORIGIN

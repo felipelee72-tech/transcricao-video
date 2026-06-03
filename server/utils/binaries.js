@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, isFreeLinkTextMode } from './config.js';
+import { buildYtDlpDiagnostics } from './ytDlpVersion.js';
 import { runCommand } from './process.js';
 
 const IS_WIN = process.platform === 'win32';
@@ -15,6 +16,39 @@ const FFMPEG_PATH = path.join(FFMPEG_DIR, IS_WIN ? 'ffmpeg.exe' : 'ffmpeg');
 const FFPROBE_PATH = path.join(FFMPEG_DIR, IS_WIN ? 'ffprobe.exe' : 'ffprobe');
 
 let cachedTools;
+let cachedYtDlpDiagnostics = null;
+
+export function getYtDlpDiagnostics() {
+  return cachedYtDlpDiagnostics;
+}
+
+async function logYtDlpRuntimeInfo(binaryPath) {
+  cachedYtDlpDiagnostics = await buildYtDlpDiagnostics(binaryPath);
+
+  console.log('[tools] yt-dlp versao em execucao:', cachedYtDlpDiagnostics.version);
+  console.log('[tools] yt-dlp caminho:', cachedYtDlpDiagnostics.path);
+
+  if (cachedYtDlpDiagnostics.buildReleaseTag) {
+    console.log(
+      '[tools] yt-dlp build Render:',
+      cachedYtDlpDiagnostics.buildReleaseTag,
+      cachedYtDlpDiagnostics.buildVersion
+        ? `(registrado: ${cachedYtDlpDiagnostics.buildVersion})`
+        : '',
+    );
+  }
+
+  if (cachedYtDlpDiagnostics.matchesBuild === false) {
+    console.warn(
+      '[tools] yt-dlp: versao em execucao difere da instalada no build',
+      { runtime: cachedYtDlpDiagnostics.version, build: cachedYtDlpDiagnostics.buildVersion },
+    );
+  }
+
+  if (!cachedYtDlpDiagnostics.available) {
+    console.error('[tools] yt-dlp indisponivel:', cachedYtDlpDiagnostics.error);
+  }
+}
 
 export async function bootstrapTools() {
   if (cachedTools) {
@@ -34,7 +68,7 @@ export async function bootstrapTools() {
     nodePath: process.execPath,
   };
 
-  console.log('[tools] yt-dlp:', ytDlp);
+  await logYtDlpRuntimeInfo(ytDlp);
   console.log('[tools] ffmpeg:', ffmpeg);
   console.log('[tools] ffprobe:', ffprobe);
 
@@ -57,7 +91,7 @@ export async function bootstrapYtDlpOnly() {
     cachedTools.ytDlp = ytDlp;
   }
 
-  console.log('[tools] yt-dlp:', ytDlp);
+  await logYtDlpRuntimeInfo(ytDlp);
   return cachedTools;
 }
 
@@ -70,21 +104,34 @@ export async function getTools() {
 }
 
 async function ensureYtDlp() {
+  const isRender = process.env.RENDER === 'true';
   const candidates = [
     config.ytDlpPath,
     YT_DLP_PATH,
-    path.join(BIN_DIR, 'yt-dlp'),
-    path.join(BIN_DIR, 'yt-dlp.exe'),
+    ...(isRender
+      ? []
+      : [path.join(BIN_DIR, 'yt-dlp'), path.join(BIN_DIR, 'yt-dlp.exe')]),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
     if (await fileExists(candidate)) {
+      if (isRender) {
+        console.log('[tools] Render: usando yt-dlp do build em', candidate);
+      }
+
       return candidate;
     }
   }
 
+  if (isRender) {
+    throw new Error(
+      'yt-dlp nao encontrado em .bin/yt-dlp. O build do Render deve baixar o binario em scripts/render-build.sh.',
+    );
+  }
+
   const pathBinary = await findYtDlpInPath();
   if (pathBinary) {
+    console.warn('[tools] usando yt-dlp do PATH do sistema (nao o de .bin):', pathBinary);
     return pathBinary;
   }
 

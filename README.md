@@ -237,7 +237,7 @@ Apos o primeiro deploy, copie a URL gerada (ex.: `https://transcricao-video.onre
 1. Abra a URL publica do Render no navegador do celular.
 2. Informe a `APP_PASSWORD` configurada no painel.
 3. Cole o link (YouTube funciona melhor).
-4. Diagnostico: `https://SUA-URL.onrender.com/debug`
+4. Diagnostico: `https://SUA-URL.onrender.com/debug` ou `GET /api/diagnostics` (versao do yt-dlp em execucao)
 
 ### 6. Testar health
 
@@ -292,4 +292,5 @@ Isso nao exige login no app — apenas cookies no servidor.
 
 - O servico **hiberna** apos inatividade; o primeiro acesso pode demorar ~30s.
 - Disco e memoria limitados; jobs ficam em memoria (reinicio apaga fila).
-- `yt-dlp` e baixado no build em `.bin/yt-dlp` (Linux).
+- `yt-dlp` e **sempre baixado de novo** no build (`scripts/render-build.sh`) da release mais recente do GitHub para `.bin/yt-dlp` (nao reutiliza binario antigo do cache nem o do PATH do build). Versao registrada em `.bin/yt-dlp.version` e tag em `.bin/yt-dlp.release`.
+- Em runtime, `GET /api/diagnostics` e os logs de inicializacao mostram a versao em execucao no Render.

@@ -11,7 +11,7 @@ import {
   getTranscriptionJob,
   getTranscriptionResult,
 } from './jobs/transcriptionJobs.js';
-import { bootstrapTools, bootstrapYtDlpOnly } from './utils/binaries.js';
+import { bootstrapTools, bootstrapYtDlpOnly, getYtDlpDiagnostics } from './utils/binaries.js';
 import { config, isFreeLinkTextMode, isOpenAiMode } from './utils/config.js';
 import { getLanIpv4Addresses, getPrimaryLanIp } from './utils/network.js';
 import { initYtDlpCookies } from './utils/ytDlpCookies.js';
@@ -34,6 +34,8 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 
 function buildHealthPayload(request) {
+  const ytDlp = getYtDlpDiagnostics();
+
   return {
     ok: true,
     host: request.hostname,
@@ -41,6 +43,36 @@ function buildHealthPayload(request) {
     ips: getLanIpv4Addresses(),
     mode: config.transcriptionMode,
     timestamp: new Date().toISOString(),
+    ytDlp: ytDlp
+      ? {
+          version: ytDlp.version,
+          available: ytDlp.available,
+        }
+      : null,
+  };
+}
+
+function buildDiagnosticsPayload(request) {
+  const ytDlp = getYtDlpDiagnostics();
+
+  return {
+    ok: true,
+    host: request.hostname,
+    render: process.env.RENDER === 'true',
+    renderExternalUrl: process.env.RENDER_EXTERNAL_URL ?? null,
+    nodeVersion: process.version,
+    mode: config.transcriptionMode,
+    timestamp: new Date().toISOString(),
+    ytDlp: ytDlp ?? {
+      path: '',
+      version: 'not_loaded',
+      available: false,
+      error: 'Ferramentas ainda nao inicializadas.',
+      buildVersion: null,
+      buildReleaseTag: null,
+      matchesBuild: null,
+    },
+    cookiesConfigured: Boolean(process.env.YT_DLP_COOKIES_CONTENT?.trim() || process.env.YT_DLP_COOKIES_FILE?.trim()),
   };
 }
 
@@ -50,6 +82,10 @@ app.get('/health', (request, response) => {
 
 app.get('/api/health', (request, response) => {
   response.json(buildHealthPayload(request));
+});
+
+app.get('/api/diagnostics', (request, response) => {
+  response.json(buildDiagnosticsPayload(request));
 });
 
 app.get('/api/config', (_request, response) => {
@@ -215,49 +251,67 @@ app.use((error, _request, response, _next) => {
   response.status(500).json({ error: 'Erro inesperado no servidor.' });
 });
 
-app.listen(config.port, '0.0.0.0', () => {
-  const lanIps = getLanIpv4Addresses();
-  const primaryLanIp = getPrimaryLanIp();
-
-  console.log(`Servidor ouvindo em http://localhost:${config.port} (bind 0.0.0.0:${config.port})`);
-  if (process.env.RENDER_EXTERNAL_URL) {
-    console.log(`[server] URL publica (Render): ${process.env.RENDER_EXTERNAL_URL}`);
-  }
-  console.log(`[server] modo: ${config.transcriptionMode}`);
-  console.log(`[server] serveClient: ${config.serveClient}`);
-  if (isFreeLinkTextMode) {
-    console.log('[server] arquitetura: extracao de legendas/captions via yt-dlp (sem OpenAI)');
-  } else {
-    console.log('[server] arquitetura: download/ffmpeg local + transcricao via Supabase Edge Function (frontend)');
-  }
-  console.log('[config] transcricao', {
-    mode: config.transcriptionMode,
-    usesLocalOpenAiKey: false,
-    appPasswordConfigured: Boolean(config.appPassword),
-    supabaseConfigured: isOpenAiMode && Boolean(config.supabaseUrl && config.supabaseAnonKey),
-    clientOrigin: config.clientOrigin,
-    allowLanOrigins: config.allowLanOrigins,
-  });
-  console.log('[server] diagnostico: http://localhost:' + config.port + '/debug');
-  if (primaryLanIp) {
-    console.log(`Celular (mesma Wi-Fi): http://${primaryLanIp}:${config.port}`);
-    console.log(`Celular debug: http://${primaryLanIp}:${config.port}/debug`);
-  }
-  if (lanIps.length > 1) {
-    console.log('[server] IPs locais detectados:', lanIps.join(', '));
+async function startServer() {
+  try {
+    await initYtDlpCookies();
+  } catch (error) {
+    console.warn('[cookies] falha ao inicializar cookies yt-dlp:', error instanceof Error ? error.message : error);
   }
 
   const bootstrap = isFreeLinkTextMode ? bootstrapYtDlpOnly : bootstrapTools;
-  bootstrap().catch((error) => {
+
+  try {
+    await bootstrap();
+  } catch (error) {
     console.error('[tools] falha ao preparar ferramentas na inicializacao:', error);
-  });
-}).on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error(`[server] porta ${config.port} em uso. Rode: npm run prestart`);
-    console.error('[server] provavel servidor antigo ainda rodando (codigo legado com OPENAI local).');
-  } else {
-    console.error('[server] falha ao iniciar:', error);
   }
+
+  const lanIps = getLanIpv4Addresses();
+  const primaryLanIp = getPrimaryLanIp();
+
+  app.listen(config.port, '0.0.0.0', () => {
+    console.log(`Servidor ouvindo em http://localhost:${config.port} (bind 0.0.0.0:${config.port})`);
+    if (process.env.RENDER_EXTERNAL_URL) {
+      console.log(`[server] URL publica (Render): ${process.env.RENDER_EXTERNAL_URL}`);
+    }
+    console.log(`[server] modo: ${config.transcriptionMode}`);
+    console.log(`[server] serveClient: ${config.serveClient}`);
+    if (isFreeLinkTextMode) {
+      console.log('[server] arquitetura: extracao de legendas/captions via yt-dlp (sem OpenAI)');
+    } else {
+      console.log('[server] arquitetura: download/ffmpeg local + transcricao via Supabase Edge Function (frontend)');
+    }
+    console.log('[config] transcricao', {
+      mode: config.transcriptionMode,
+      usesLocalOpenAiKey: false,
+      appPasswordConfigured: Boolean(config.appPassword),
+      supabaseConfigured: isOpenAiMode && Boolean(config.supabaseUrl && config.supabaseAnonKey),
+      clientOrigin: config.clientOrigin,
+      allowLanOrigins: config.allowLanOrigins,
+    });
+    console.log('[server] diagnostico UI: http://localhost:' + config.port + '/debug');
+    console.log('[server] diagnostico API: http://localhost:' + config.port + '/api/diagnostics');
+    if (primaryLanIp) {
+      console.log(`Celular (mesma Wi-Fi): http://${primaryLanIp}:${config.port}`);
+      console.log(`Celular debug: http://${primaryLanIp}:${config.port}/debug`);
+    }
+    if (lanIps.length > 1) {
+      console.log('[server] IPs locais detectados:', lanIps.join(', '));
+    }
+  }).on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`[server] porta ${config.port} em uso. Rode: npm run prestart`);
+      console.error('[server] provavel servidor antigo ainda rodando (codigo legado com OPENAI local).');
+    } else {
+      console.error('[server] falha ao iniciar:', error);
+    }
+
+    process.exit(1);
+  });
+}
+
+startServer().catch((error) => {
+  console.error('[server] falha fatal ao iniciar:', error);
   process.exit(1);
 });
 

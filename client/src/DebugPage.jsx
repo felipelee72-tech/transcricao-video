@@ -3,22 +3,23 @@ import { apiUrl, getClientDiagnostics } from './lib/api.js';
 
 export default function DebugPage() {
   const [health, setHealth] = useState({ status: 'loading' });
+  const [serverDiagnostics, setServerDiagnostics] = useState({ status: 'loading' });
   const diagnostics = getClientDiagnostics();
 
   useEffect(() => {
     const controller = new AbortController();
 
-    async function loadHealth() {
+    async function loadEndpoint(path, setter) {
       try {
         const startedAt = Date.now();
-        const response = await fetch(apiUrl('/api/health'), {
+        const response = await fetch(apiUrl(path), {
           signal: controller.signal,
           cache: 'no-store',
         });
         const body = await response.json().catch(() => null);
         const elapsedMs = Date.now() - startedAt;
 
-        setHealth({
+        setter({
           status: response.ok ? 'ok' : 'error',
           httpStatus: response.status,
           elapsedMs,
@@ -26,7 +27,7 @@ export default function DebugPage() {
           error: response.ok ? '' : body?.error ?? 'Resposta HTTP nao OK',
         });
       } catch (error) {
-        setHealth({
+        setter({
           status: 'error',
           error: error instanceof Error ? error.message : String(error),
           hint:
@@ -35,7 +36,8 @@ export default function DebugPage() {
       }
     }
 
-    void loadHealth();
+    void loadEndpoint('/api/health', setHealth);
+    void loadEndpoint('/api/diagnostics', setServerDiagnostics);
     return () => controller.abort();
   }, []);
 
@@ -61,6 +63,21 @@ export default function DebugPage() {
           {health.status !== 'loading' && (
             <pre className={health.status === 'ok' ? 'error-details' : 'error-details message error'}>
               {JSON.stringify(health, null, 2)}
+            </pre>
+          )}
+        </section>
+
+        <section className="status-panel">
+          <h2>GET /api/diagnostics</h2>
+          <p className="message meta">yt-dlp em execucao no servidor (Render/local)</p>
+          {serverDiagnostics.status === 'loading' && <p className="message">Carregando...</p>}
+          {serverDiagnostics.status !== 'loading' && (
+            <pre
+              className={
+                serverDiagnostics.status === 'ok' ? 'error-details' : 'error-details message error'
+              }
+            >
+              {JSON.stringify(serverDiagnostics, null, 2)}
             </pre>
           )}
         </section>
