@@ -431,50 +431,97 @@
         return longerKey.startsWith(shorterKey);
       }
 
-      function removePrefixDuplicateLines(lines) {
-        let current = lines.filter(function (line) {
-          return lineComparisonKey(line).length > 0;
-        });
+      function parseTimestampToSeconds(timestamp) {
+        const parts = String(timestamp || '')
+          .split(':')
+          .map(function (part) {
+            return Number(part);
+          });
 
-        if (current.length <= 1) {
-          return current;
+        if (parts.some(function (n) {
+          return !Number.isFinite(n);
+        })) {
+          return null;
         }
 
-        let changed = true;
+        if (parts.length === 3) {
+          return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        }
 
-        while (changed) {
-          changed = false;
-          const next = [];
+        if (parts.length === 2) {
+          return parts[0] * 60 + parts[1];
+        }
 
-          for (let i = 0; i < current.length; i++) {
-            const key = lineComparisonKey(current[i]);
+        return parts[0] || null;
+      }
 
-            if (i + 1 < current.length) {
-              const nextKey = lineComparisonKey(current[i + 1]);
+      function normalizeCueEntry(entry) {
+        if (entry && typeof entry === 'object' && entry.raw) {
+          return {
+            seconds: typeof entry.seconds === 'number' ? entry.seconds : null,
+            raw: entry.raw,
+          };
+        }
 
-              if (isPrefixOfLine(key, nextKey)) {
-                changed = true;
-                continue;
-              }
+        return {
+          seconds: null,
+          raw: normalizeRawCueLine(entry),
+        };
+      }
+
+      function removePrefixDuplicateLines(lines) {
+        const items = lines
+          .map(normalizeCueEntry)
+          .map(function (item) {
+            return {
+              seconds: item.seconds,
+              raw: item.raw,
+              key: lineComparisonKey(item.raw),
+            };
+          })
+          .filter(function (item) {
+            return item.key.length > 0;
+          });
+
+        if (items.length <= 1) {
+          return items;
+        }
+
+        const kept = [];
+
+        for (let i = 0; i < items.length; i++) {
+          let dominated = false;
+
+          for (let j = i + 1; j < items.length; j++) {
+            if (isPrefixOfLine(items[i].key, items[j].key)) {
+              dominated = true;
+              break;
             }
-
-            next.push(current[i]);
           }
 
-          current = next;
+          if (!dominated) {
+            kept.push({
+              seconds: items[i].seconds,
+              raw: items[i].raw,
+            });
+          }
         }
 
-        return current;
+        return kept;
       }
 
       function extractTranscriptCueLines(body) {
-        const lines = [];
-        const timestampRe = /\[(\d{1,2}:)?\d{1,2}:\d{2}(?::\d{2})?\]\s*/g;
+        const cues = [];
+        const timestampRe = /\[([\d:.]+)\]\s*/g;
         const markers = [];
         let match;
 
         while ((match = timestampRe.exec(body)) !== null) {
-          markers.push({ start: match.index, end: match.index + match[0].length });
+          markers.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            seconds: parseTimestampToSeconds(match[1]),
+          });
         }
 
         if (markers.length > 0) {
@@ -484,17 +531,44 @@
             const chunk = body.slice(chunkStart, chunkEnd).replace(/\n+/g, ' ').trim();
             const raw = normalizeRawCueLine(chunk);
             if (raw) {
-              lines.push(raw);
+              cues.push({
+                seconds: markers[i].seconds,
+                raw: raw,
+              });
             }
           }
-          return lines;
+          return cues;
         }
 
         return body
           .split(/\n+/)
           .map(function (row) {
-            return normalizeRawCueLine(row.replace(/^\[[\d:]+\]\s*/, ''));
+            const timeMatch = row.match(/^\[([\d:.]+)\]\s*/);
+            return {
+              seconds: timeMatch ? parseTimestampToSeconds(timeMatch[1]) : null,
+              raw: normalizeRawCueLine(row.replace(/^\[[\d:.]+\]\s*/, '')),
+            };
           })
+          .filter(function (cue) {
+            return cue.raw;
+          });
+      }
+
+      function splitInternalSpeakerParts(rawChunk) {
+        const decoded = decodeHtmlEntities(rawChunk);
+        const withoutLeading = decoded.replace(/^\s*(?:>>|&gt;&gt;|››|»»)\s*/i, '').trim();
+
+        if (!withoutLeading) {
+          return [];
+        }
+
+        if (!/(?:>>|&gt;&gt;|››|»»)/.test(withoutLeading)) {
+          return [withoutLeading];
+        }
+
+        return withoutLeading
+          .split(/\s*(?:>>|&gt;&gt;|››|»»)\s*/g)
+          .map(cleanCueLine)
           .filter(Boolean);
       }
 
@@ -515,10 +589,6 @@
         }
 
         return result.trim();
-      }
-
-      function cueIndicatesNewSpeaker(rawChunk) {
-        return /(?:>>|&gt;&gt;|››|»»)/.test(String(rawChunk || ''));
       }
 
       function appendLineToTurn(turnLines, cleaned) {
@@ -558,21 +628,31 @@
 
       function processSpeakerTurns(cueLines) {
         const turns = [];
-        let turnIndex = 0;
+        let currentTurn = [];
+        const PAUSE_BREAK_SEC = 1.4;
 
-        function ensureTurn() {
-          if (!turns[turnIndex]) {
-            turns[turnIndex] = [];
+        function flushTurn() {
+          if (!currentTurn.length) {
+            return;
           }
+          turns.push(currentTurn);
+          currentTurn = [];
         }
 
         for (let c = 0; c < cueLines.length; c++) {
-          const rawChunk = cueLines[c];
-          const decoded = decodeHtmlEntities(rawChunk);
-          const parts = decoded.split(/\s*(?:>>|&gt;&gt;|››|»»)\s*/);
+          const cue = normalizeCueEntry(cueLines[c]);
+          const parts = splitInternalSpeakerParts(cue.raw);
 
-          if (cueIndicatesNewSpeaker(rawChunk) && turns.length > 0) {
-            turnIndex++;
+          if (c > 0 && currentTurn.length > 0) {
+            const prevCue = normalizeCueEntry(cueLines[c - 1]);
+            const gap =
+              cue.seconds != null &&
+              prevCue.seconds != null &&
+              cue.seconds - prevCue.seconds >= PAUSE_BREAK_SEC;
+
+            if (gap) {
+              flushTurn();
+            }
           }
 
           for (let p = 0; p < parts.length; p++) {
@@ -582,13 +662,14 @@
             }
 
             if (p > 0) {
-              turnIndex++;
+              flushTurn();
             }
 
-            ensureTurn();
-            appendLineToTurn(turns[turnIndex], cleaned);
+            appendLineToTurn(currentTurn, cleaned);
           }
         }
+
+        flushTurn();
 
         return turns.filter(function (turn) {
           return turn && turn.length > 0;
@@ -602,8 +683,8 @@
         }
 
         return deduped
-          .map(function (line) {
-            return collapseInlineRepeats(cleanCueLine(line));
+          .map(function (entry) {
+            return collapseInlineRepeats(cleanCueLine(entry.raw || entry));
           })
           .filter(Boolean)
           .join(' ')
@@ -846,12 +927,12 @@
           }
 
           const data = JSON.parse(trimmed);
-          const lines = (data.events || [])
+          const cues = (data.events || [])
             .filter(function (e) {
               return e.segs;
             })
             .map(function (e) {
-              return cleanCueLine(
+              const text = cleanCueLine(
                 e.segs
                   .map(function (s) {
                     return s.utf8 || '';
@@ -859,10 +940,21 @@
                   .join('')
                   .replace(/\n/g, ' '),
               );
+
+              if (!text) {
+                return null;
+              }
+
+              const offsetMs = typeof e.tStartMs === 'number' ? e.tStartMs : typeof e.tStart === 'number' ? e.tStart : null;
+
+              return {
+                seconds: offsetMs != null ? offsetMs / 1000 : null,
+                raw: text,
+              };
             })
             .filter(Boolean);
 
-          return formatTranscriptFromCues(lines, splitSpeakersInput.checked);
+          return formatTranscriptFromCues(cues, splitSpeakersInput.checked);
         } catch {
           return '';
         }
