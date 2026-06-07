@@ -314,7 +314,7 @@
 
   <script>
     (function () {
-      const FETCH_TIMEOUT_MS = 25000;
+      const FETCH_TIMEOUT_MS = 60000;
       const TIMEDTEXT_BASE = 'https://www.youtube.com/api/timedtext';
       const TRANSCRIPT_API = 'https://youtube-transcript.ai/transcript';
 
@@ -897,6 +897,24 @@
         return match ? match[1].trim() : '';
       }
 
+      function classifyTranscriptPayload(raw) {
+        const text = String(raw || '');
+
+        if (text.includes('## Transcript')) {
+          return 'ok';
+        }
+
+        if (/Transcript unavailable/i.test(text)) {
+          return 'unavailable';
+        }
+
+        if (text.trim().startsWith('<!') || /<!DOCTYPE/i.test(text)) {
+          return 'invalid-id';
+        }
+
+        return 'empty';
+      }
+
       function transcriptMatchesAttempt(attempt, reportedLang) {
         const reported = String(reportedLang || '').toLowerCase();
 
@@ -915,7 +933,7 @@
         return reported.length > 0;
       }
 
-      async function fetchTranscriptFromApi(videoId, attempt) {
+      async function fetchTranscriptFromApi(videoId, attempt, onProgress) {
         const url = buildTranscriptApiUrl(videoId, attempt.lang);
         const response = await fetchWithTimeout(url, { headers: { Accept: 'text/plain' } }, FETCH_TIMEOUT_MS);
 
@@ -924,6 +942,24 @@
         }
 
         const raw = await response.text();
+        const payloadKind = classifyTranscriptPayload(raw);
+
+        if (payloadKind === 'invalid-id') {
+          return { error: 'invalid-id' };
+        }
+
+        if (payloadKind !== 'ok') {
+          return null;
+        }
+
+        if (onProgress) {
+          onProgress('processando');
+        }
+
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 0);
+        });
+
         const text = parseTranscriptTxt(raw, {
           splitSpeakers: splitSpeakersInput.checked,
         });
@@ -953,11 +989,19 @@
           }
 
           try {
-            const result = await fetchTranscriptFromApi(videoId, attempt);
-            if (result) {
+            const result = await fetchTranscriptFromApi(videoId, attempt, onProgress);
+            if (result && result.error === 'invalid-id') {
+              throw new Error(
+                'Link do YouTube inválido ou vídeo não encontrado. Use o link completo (watch, shorts ou youtu.be) ou o ID de 11 caracteres.'
+              );
+            }
+            if (result && result.text) {
               return result;
             }
-          } catch {
+          } catch (err) {
+            if (err && err.message && err.message.indexOf('Link do YouTube inválido') !== -1) {
+              throw err;
+            }
             /* tenta próximo idioma */
           }
         }
@@ -1018,6 +1062,10 @@
           }
         } catch {
           /* fallthrough */
+        }
+
+        if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
+          return trimmed;
         }
 
         const loose = trimmed.match(/(?:v=|\/embed\/|\/shorts\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
@@ -1198,6 +1246,10 @@
 
         try {
           const result = await transcribeYouTubeUrl(url, function (trackId) {
+            if (trackId === 'processando') {
+              setStatus('Processando legendas…', 'loading');
+              return;
+            }
             setStatus('Buscando legendas (' + trackId + ')…', 'loading');
           });
           renderScriptOutput(result.text);
