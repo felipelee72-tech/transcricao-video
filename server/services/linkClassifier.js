@@ -56,11 +56,13 @@ export function extractYouTubeVideoId(inputUrl) {
 
   if (hostname.includes('youtube.com')) {
     const videoId = parsedUrl.searchParams.get('v');
-    if (!videoId) {
-      throw new Error('URL do YouTube invalida.');
-    }
+    if (videoId) return videoId;
 
-    return videoId;
+    // Suporte a /live/ID, /shorts/ID, /embed/ID, /v/ID
+    const pathMatch = parsedUrl.pathname.match(/^\/(live|shorts|embed|v)\/([a-zA-Z0-9_-]{11})/);
+    if (pathMatch) return pathMatch[2];
+
+    throw new Error('URL do YouTube invalida.');
   }
 
   throw new Error('URL do YouTube invalida.');
