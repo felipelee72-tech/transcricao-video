@@ -317,6 +317,7 @@
       const FETCH_TIMEOUT_MS = 60000;
       const TIMEDTEXT_BASE = 'https://www.youtube.com/api/timedtext';
       const TRANSCRIPT_API = 'https://youtube-transcript.ai/transcript';
+      const FREE_TRANSCRIPT_API = 'https://api.freetranscriptapi.com/v1/transcript';
 
       const LANG_ATTEMPTS = [
         { id: 'pt-BR', lang: 'pt-BR' },
@@ -982,31 +983,39 @@
       }
 
       async function fetchCaptionsFromTranscriptApi(videoId, onProgress) {
-        for (let i = 0; i < LANG_ATTEMPTS.length; i++) {
-          const attempt = LANG_ATTEMPTS[i];
+        const promises = LANG_ATTEMPTS.map(function (attempt) {
           if (onProgress) {
             onProgress(attempt.id);
           }
 
-          try {
-            const result = await fetchTranscriptFromApi(videoId, attempt, onProgress);
+          return fetchTranscriptFromApi(videoId, attempt, onProgress).then(function (result) {
             if (result && result.error === 'invalid-id') {
-              throw new Error(
-                'Link do YouTube inválido ou vídeo não encontrado. Use o link completo (watch, shorts ou youtu.be) ou o ID de 11 caracteres.'
+              throw Object.assign(
+                new Error(
+                  'Link do YouTube inválido ou vídeo não encontrado. Use o link completo (watch, shorts ou youtu.be) ou o ID de 11 caracteres.'
+                ),
+                { isInvalidId: true }
               );
             }
-            if (result && result.text) {
-              return result;
+            if (!result || !result.text) {
+              throw new Error('no result');
             }
-          } catch (err) {
-            if (err && err.message && err.message.indexOf('Link do YouTube inválido') !== -1) {
-              throw err;
-            }
-            /* tenta próximo idioma */
-          }
-        }
+            return result;
+          });
+        });
 
-        return null;
+        try {
+          return await Promise.any(promises);
+        } catch (aggErr) {
+          const errors = aggErr && aggErr.errors ? aggErr.errors : [];
+          const invalidId = errors.find(function (e) {
+            return e && e.isInvalidId;
+          });
+          if (invalidId) {
+            throw invalidId;
+          }
+          return null;
+        }
       }
 
       function parseDirectBody(body) {
@@ -1137,7 +1146,7 @@
 
       async function fetchTimedTextBody(apiUrl, mode) {
         const requestUrl = mode.wrap(apiUrl);
-        const response = await fetchWithTimeout(requestUrl, {}, FETCH_TIMEOUT_MS);
+        const response = await fetchWithTimeout(requestUrl, {}, 8000);
 
         if (!response.ok) {
           return '';
@@ -1150,43 +1159,175 @@
 
       async function fetchCaptionForTrack(videoId, track) {
         const apiUrl = buildTimedTextUrl(videoId, track);
-
-        for (let m = 0; m < PROXY_MODES.length; m++) {
-          const mode = PROXY_MODES[m];
-          try {
-            const body = await fetchTimedTextBody(apiUrl, mode);
-            if (!body) continue;
-
-            const text = parseJson3Captions(body);
-            if (text) {
-              return {
-                language: track.id,
-                sourceType: track.auto ? 'auto-caption' : 'subtitle',
-                text: text,
-              };
+        const promises = PROXY_MODES.map(function (mode) {
+          return fetchTimedTextBody(apiUrl, mode).then(function (body) {
+            const text = body && parseJson3Captions(body);
+            if (!text) {
+              throw new Error('empty');
             }
-          } catch {
-            /* tenta próximo modo */
-          }
-        }
+            return {
+              language: track.id,
+              sourceType: track.auto ? 'auto-caption' : 'subtitle',
+              text: text,
+            };
+          });
+        });
 
-        return null;
+        try {
+          return await Promise.any(promises);
+        } catch {
+          return null;
+        }
       }
 
       async function fetchCaptionsFromTimedText(videoId, onProgress) {
-        for (let t = 0; t < TIMEDTEXT_TRACKS.length; t++) {
-          const track = TIMEDTEXT_TRACKS[t];
+        const promises = TIMEDTEXT_TRACKS.map(function (track) {
           if (onProgress) {
             onProgress(track.id);
           }
 
-          const result = await fetchCaptionForTrack(videoId, track);
-          if (result) {
+          return fetchCaptionForTrack(videoId, track).then(function (result) {
+            if (!result) {
+              throw new Error('no result');
+            }
             return result;
+          });
+        });
+
+        try {
+          return await Promise.any(promises);
+        } catch {
+          return null;
+        }
+      }
+
+      const FREE_LANG_ATTEMPTS = [
+        { id: 'pt', lang: 'pt' },
+        { id: 'pt-BR', lang: 'pt-BR' },
+        { id: 'en', lang: 'en' },
+        { id: 'auto', lang: '' },
+      ];
+
+      function reportedLanguageMatches(requestedLang, reportedLang) {
+        const reported = String(reportedLang || '').toLowerCase();
+        const requested = String(requestedLang || '').toLowerCase();
+
+        if (!requested) {
+          return reported.length > 0;
+        }
+
+        const base = requested.split('-')[0];
+        return reported === requested || reported.indexOf(base) === 0;
+      }
+
+      async function fetchFreeTranscriptAttempt(videoId, attempt, onProgress) {
+        const params = new URLSearchParams({
+          video_url: 'https://www.youtube.com/watch?v=' + videoId,
+        });
+
+        if (attempt.lang) {
+          params.set('lang', attempt.lang);
+        }
+
+        const response = await fetchWithTimeout(
+          FREE_TRANSCRIPT_API + '?' + params.toString(),
+          { headers: { Accept: 'application/json' } },
+          FETCH_TIMEOUT_MS,
+        );
+
+        if (response.status === 429) {
+          throw Object.assign(
+            new Error('Muitas consultas em pouco tempo. Espere um minuto e tente de novo.'),
+            { isRateLimit: true },
+          );
+        }
+
+        let data = null;
+        try {
+          data = await response.json();
+        } catch {
+          data = null;
+        }
+
+        if (response.status === 400) {
+          const message = data && data.error && data.error.message ? String(data.error.message) : '';
+          if (/invalid/i.test(message)) {
+            throw Object.assign(
+              new Error(
+                'Link do YouTube inválido ou vídeo não encontrado. Use o link completo (watch, shorts ou youtu.be) ou o ID de 11 caracteres.',
+              ),
+              { isInvalidId: true },
+            );
+          }
+          return null;
+        }
+
+        if (!response.ok || !data || !Array.isArray(data.transcript)) {
+          return null;
+        }
+
+        const cues = data.transcript
+          .map(function (segment) {
+            return {
+              seconds: typeof segment.start === 'number' ? segment.start : null,
+              raw: String(segment.text || ''),
+            };
+          })
+          .filter(function (cue) {
+            return cue.raw.trim().length > 0;
+          });
+
+        if (!cues.length) {
+          return null;
+        }
+
+        if (onProgress) {
+          onProgress('processando');
+        }
+
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 0);
+        });
+
+        const text = formatTranscriptFromCues(cues, splitSpeakersInput.checked);
+        if (!text || !text.trim()) {
+          return null;
+        }
+
+        const reportedLang = String(data.language || attempt.id || '');
+
+        return {
+          language: reportedLang,
+          sourceType: /auto/i.test(reportedLang) ? 'auto-caption' : 'subtitle',
+          text: text,
+          matchesRequest: reportedLanguageMatches(attempt.lang, reportedLang),
+        };
+      }
+
+      async function fetchCaptionsFromFreeTranscriptApi(videoId, onProgress) {
+        let fallback = null;
+
+        for (let i = 0; i < FREE_LANG_ATTEMPTS.length; i++) {
+          const attempt = FREE_LANG_ATTEMPTS[i];
+          if (onProgress) {
+            onProgress(attempt.id);
+          }
+
+          const result = await fetchFreeTranscriptAttempt(videoId, attempt, onProgress);
+          if (!result) {
+            continue;
+          }
+
+          if (result.matchesRequest || !attempt.lang) {
+            return result;
+          }
+
+          if (!fallback) {
+            fallback = result;
           }
         }
 
-        return null;
+        return fallback;
       }
 
       async function transcribeYouTubeUrl(input, onProgress) {
@@ -1195,7 +1336,19 @@
           throw new Error('URL inválida. Cole um link do YouTube (watch, shorts ou youtu.be).');
         }
 
-        let result = await fetchCaptionsFromTranscriptApi(videoId, onProgress);
+        let result = null;
+
+        try {
+          result = await fetchCaptionsFromFreeTranscriptApi(videoId, onProgress);
+        } catch (err) {
+          if (err && (err.isInvalidId || err.isRateLimit)) {
+            throw err;
+          }
+        }
+
+        if (!result) {
+          result = await fetchCaptionsFromTranscriptApi(videoId, onProgress);
+        }
 
         if (!result) {
           if (onProgress) {
